@@ -65,8 +65,10 @@ def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None)
     # Create a cache key that includes all parameters to ensure exact matches
     cache_key = f"{ticker}_{start_date}_{end_date}"
     
-    # Check cache first - simple exact match
-    if cached_data := _cache.get_prices(cache_key):
+    # Check cache first. Use "is not None" so a cached *empty* result counts as
+    # a hit (an empty list is falsy) — otherwise empties would re-fetch forever.
+    cached_data = _cache.get_prices(cache_key)
+    if cached_data is not None:
         return [Price(**price) for price in cached_data]
 
     # If not in cache, fetch from API
@@ -78,7 +80,7 @@ def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None)
     url = f"https://api.financialdatasets.ai/prices/?ticker={ticker}&interval=day&interval_multiplier=1&start_date={start_date}&end_date={end_date}"
     response = _make_api_request(url, headers)
     if response.status_code != 200:
-        return []
+        return []  # don't cache API errors — only successful responses
 
     # Parse response with Pydantic model
     try:
@@ -86,12 +88,9 @@ def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None)
         prices = price_response.prices
     except Exception as e:
         logger.warning("Failed to parse price response for %s: %s", ticker, e)
-        return []
+        return []  # don't cache parse failures
 
-    if not prices:
-        return []
-
-    # Cache the results using the comprehensive cache key
+    # Cache the (possibly empty) successful result using the comprehensive key
     _cache.set_prices(cache_key, [p.model_dump() for p in prices])
     return prices
 
@@ -107,8 +106,9 @@ def get_financial_metrics(
     # Create a cache key that includes all parameters to ensure exact matches
     cache_key = f"{ticker}_{period}_{end_date}_{limit}"
     
-    # Check cache first - simple exact match
-    if cached_data := _cache.get_financial_metrics(cache_key):
+    # Check cache first ("is not None" so a cached empty result is a hit).
+    cached_data = _cache.get_financial_metrics(cache_key)
+    if cached_data is not None:
         return [FinancialMetrics(**metric) for metric in cached_data]
 
     # If not in cache, fetch from API
@@ -120,7 +120,7 @@ def get_financial_metrics(
     url = f"https://api.financialdatasets.ai/financial-metrics/?ticker={ticker}&report_period_lte={end_date}&limit={limit}&period={period}"
     response = _make_api_request(url, headers)
     if response.status_code != 200:
-        return []
+        return []  # don't cache API errors
 
     # Parse response with Pydantic model
     try:
@@ -128,12 +128,9 @@ def get_financial_metrics(
         financial_metrics = metrics_response.financial_metrics
     except Exception as e:
         logger.warning("Failed to parse financial metrics response for %s: %s", ticker, e)
-        return []
+        return []  # don't cache parse failures
 
-    if not financial_metrics:
-        return []
-
-    # Cache the results as dicts using the comprehensive cache key
+    # Cache the (possibly empty) successful result using the comprehensive key
     _cache.set_financial_metrics(cache_key, [m.model_dump() for m in financial_metrics])
     return financial_metrics
 
@@ -191,8 +188,9 @@ def get_insider_trades(
     # Create a cache key that includes all parameters to ensure exact matches
     cache_key = f"{ticker}_{start_date or 'none'}_{end_date}_{limit}"
     
-    # Check cache first - simple exact match
-    if cached_data := _cache.get_insider_trades(cache_key):
+    # Check cache first ("is not None" so a cached empty result is a hit).
+    cached_data = _cache.get_insider_trades(cache_key)
+    if cached_data is not None:
         return [InsiderTrade(**trade) for trade in cached_data]
 
     # If not in cache, fetch from API
@@ -203,6 +201,7 @@ def get_insider_trades(
 
     all_trades = []
     current_end_date = end_date
+    got_ok = False  # whether at least one request returned 200 (so empty == "no data", cacheable)
 
     while True:
         url = f"https://api.financialdatasets.ai/insider-trades/?ticker={ticker}&filing_date_lte={current_end_date}"
@@ -222,6 +221,7 @@ def get_insider_trades(
             logger.warning("Failed to parse insider trades response for %s: %s", ticker, e)
             break
 
+        got_ok = True
         if not insider_trades:
             break
 
@@ -238,11 +238,10 @@ def get_insider_trades(
         if current_end_date <= start_date:
             break
 
-    if not all_trades:
-        return []
-
-    # Cache the results using the comprehensive cache key
-    _cache.set_insider_trades(cache_key, [trade.model_dump() for trade in all_trades])
+    # Cache successful responses, including a legitimately empty result, so it
+    # isn't re-fetched on every run. Don't cache when every request errored.
+    if got_ok:
+        _cache.set_insider_trades(cache_key, [trade.model_dump() for trade in all_trades])
     return all_trades
 
 
@@ -257,8 +256,9 @@ def get_company_news(
     # Create a cache key that includes all parameters to ensure exact matches
     cache_key = f"{ticker}_{start_date or 'none'}_{end_date}_{limit}"
     
-    # Check cache first - simple exact match
-    if cached_data := _cache.get_company_news(cache_key):
+    # Check cache first ("is not None" so a cached empty result is a hit).
+    cached_data = _cache.get_company_news(cache_key)
+    if cached_data is not None:
         return [CompanyNews(**news) for news in cached_data]
 
     # If not in cache, fetch from API
@@ -269,6 +269,7 @@ def get_company_news(
 
     all_news = []
     current_end_date = end_date
+    got_ok = False  # whether at least one request returned 200 (so empty == "no data", cacheable)
 
     while True:
         url = f"https://api.financialdatasets.ai/news/?ticker={ticker}&end_date={current_end_date}"
@@ -288,6 +289,7 @@ def get_company_news(
             logger.warning("Failed to parse company news response for %s: %s", ticker, e)
             break
 
+        got_ok = True
         if not company_news:
             break
 
@@ -304,11 +306,10 @@ def get_company_news(
         if current_end_date <= start_date:
             break
 
-    if not all_news:
-        return []
-
-    # Cache the results using the comprehensive cache key
-    _cache.set_company_news(cache_key, [news.model_dump() for news in all_news])
+    # Cache successful responses, including a legitimately empty result, so it
+    # isn't re-fetched on every run. Don't cache when every request errored.
+    if got_ok:
+        _cache.set_company_news(cache_key, [news.model_dump() for news in all_news])
     return all_news
 
 
