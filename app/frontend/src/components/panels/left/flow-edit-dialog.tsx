@@ -85,15 +85,15 @@ export function FlowEditDialog({ flow, isOpen, onClose, onFlowUpdated }: FlowEdi
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle>Edit Flow</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-2xl">Edit Flow</DialogTitle>
+          <DialogDescription className="text-base">
             Update the name and description for your flow.
           </DialogDescription>
         </DialogHeader>
         
         <div className="grid gap-4 py-4">
           <div className="grid gap-2">
-            <label htmlFor="name" className="text-sm font-medium">
+            <label htmlFor="name" className="text-base font-medium">
               Name
             </label>
             <Input
@@ -102,12 +102,12 @@ export function FlowEditDialog({ flow, isOpen, onClose, onFlowUpdated }: FlowEdi
               onChange={(e) => setName(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Enter flow name"
-              className="col-span-3"
+              className="col-span-3 text-base"
             />
           </div>
           
           <div className="grid gap-2">
-            <label htmlFor="description" className="text-sm font-medium">
+            <label htmlFor="description" className="text-base font-medium">
               Description
             </label>
             <Input
@@ -116,18 +116,19 @@ export function FlowEditDialog({ flow, isOpen, onClose, onFlowUpdated }: FlowEdi
               onChange={(e) => setDescription(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Enter flow description (optional)"
-              className="col-span-3"
+              className="col-span-3 text-base"
             />
           </div>
         </div>
         
         <DialogFooter>
-          <Button variant="outline" onClick={handleCancel}>
+          <Button variant="outline" onClick={handleCancel} className="text-base">
             Cancel
           </Button>
-          <Button 
-            onClick={handleSave} 
+          <Button
+            onClick={handleSave}
             disabled={isLoading || !name.trim()}
+            className="text-base"
           >
             {isLoading ? 'Saving...' : 'Save Changes'}
           </Button>
