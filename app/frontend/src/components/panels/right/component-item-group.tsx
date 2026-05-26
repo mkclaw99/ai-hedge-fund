@@ -1,5 +1,6 @@
 import ComponentItem from '@/components/panels/right/component-item';
 import { AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useFlowContext } from '@/contexts/flow-context';
 import { ComponentGroup } from '@/data/sidebar-components';
 
@@ -8,11 +9,11 @@ interface ComponentItemGroupProps {
   activeItem: string | null;
 }
 
-export function ComponentItemGroup({ 
-  group, 
+export function ComponentItemGroup({
+  group,
   activeItem
 }: ComponentItemGroupProps) {
-  const { name, icon: Icon, iconColor, items } = group;
+  const { name, icon: Icon, iconColor, description, items } = group;
   const { addComponentToFlow } = useFlowContext();
 
   const handleItemClick = async (componentName: string) => {
@@ -22,22 +23,30 @@ export function ComponentItemGroup({
       console.error('Failed to add component to flow:', error);
     }
   };
-  
+
   return (
     <AccordionItem key={name} value={name} className="border-none">
       <AccordionTrigger className="px-4 py-2 text-sm hover-bg hover:no-underline">
-        <div className="flex items-center gap-2">
-          <Icon size={16} className={iconColor} />
-          <span className="capitalize">{name}</span>
-        </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex items-center gap-2">
+              <Icon size={16} className={iconColor} />
+              <span className="capitalize">{name}</span>
+            </div>
+          </TooltipTrigger>
+          {description && (
+            <TooltipContent side="left" className="max-w-xs">{description}</TooltipContent>
+          )}
+        </Tooltip>
       </AccordionTrigger>
       <AccordionContent className="px-4">
         <div className="space-y-1">
           {items.map((item) => (
-            <ComponentItem 
+            <ComponentItem
               key={item.name}
-              icon={item.icon} 
-              label={item.name} 
+              icon={item.icon}
+              label={item.name}
+              description={item.description}
               isActive={activeItem === item.name}
               onClick={() => handleItemClick(item.name)}
             />
@@ -46,4 +55,4 @@ export function ComponentItemGroup({
       </AccordionContent>
     </AccordionItem>
   );
-} 
+}
