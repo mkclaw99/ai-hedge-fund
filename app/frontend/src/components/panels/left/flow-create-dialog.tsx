@@ -80,15 +80,15 @@ export function FlowCreateDialog({ isOpen, onClose, onFlowCreated }: FlowCreateD
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle>Create New Flow</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-2xl">Create New Flow</DialogTitle>
+          <DialogDescription className="text-base">
             Create a new flow with a custom name and description.
           </DialogDescription>
         </DialogHeader>
         
         <div className="grid gap-4 py-4">
           <div className="grid gap-2">
-            <label htmlFor="create-name" className="text-sm font-medium">
+            <label htmlFor="create-name" className="text-base font-medium">
               Name
             </label>
             <Input
@@ -97,13 +97,13 @@ export function FlowCreateDialog({ isOpen, onClose, onFlowCreated }: FlowCreateD
               onChange={(e) => setName(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Enter flow name"
-              className="col-span-3"
+              className="col-span-3 text-base"
               autoFocus
             />
           </div>
           
           <div className="grid gap-2">
-            <label htmlFor="create-description" className="text-sm font-medium">
+            <label htmlFor="create-description" className="text-base font-medium">
               Description
             </label>
             <Input
@@ -112,18 +112,19 @@ export function FlowCreateDialog({ isOpen, onClose, onFlowCreated }: FlowCreateD
               onChange={(e) => setDescription(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Enter flow description (optional)"
-              className="col-span-3"
+              className="col-span-3 text-base"
             />
           </div>
         </div>
         
         <DialogFooter>
-          <Button variant="outline" onClick={handleCancel}>
+          <Button variant="outline" onClick={handleCancel} className="text-base">
             Cancel
           </Button>
-          <Button 
-            onClick={handleCreate} 
+          <Button
+            onClick={handleCreate}
             disabled={isLoading || !name.trim()}
+            className="text-base"
           >
             {isLoading ? 'Creating...' : 'Create Flow'}
           </Button>
