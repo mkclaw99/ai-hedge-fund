@@ -48,7 +48,7 @@ function ProgressSection({ sortedAgents }: { sortedAgents: [string, any][] }) {
 
 // Summary Section Component
 function SummarySection({ outputData }: { outputData: any }) {
-  if (!outputData) return null;
+  if (!outputData?.decisions) return null;
 
   return (
     <Card className="bg-transparent mb-4">
