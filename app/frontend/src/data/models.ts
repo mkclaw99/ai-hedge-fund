@@ -28,12 +28,18 @@ export const getModels = async (): Promise<LanguageModel[]> => {
 };
 
 /**
- * Get the default model (GPT-4.1) from the models list
+ * Get the default model (Gemini 3.1 Pro) from the models list.
+ * Falls back to any Google model, then the first available model.
  */
 export const getDefaultModel = async (): Promise<LanguageModel | null> => {
   try {
     const models = await getModels();
-    return models.find(model => model.model_name === "gpt-4.1") || models[0] || null;
+    return (
+      models.find(model => model.model_name === "gemini-3.1-pro-preview") ||
+      models.find(model => model.provider === "Google") ||
+      models[0] ||
+      null
+    );
   } catch (error) {
     console.error('Failed to get default model:', error);
     return null;
