@@ -13,6 +13,9 @@ A two-tier cache:
 from __future__ import annotations
 
 import os
+import time
+
+from src.data.freshness import is_fresh
 
 
 class Cache:
@@ -31,6 +34,8 @@ class Cache:
         self._insider_trades_cache: dict[str, list[dict[str, any]]] = {}
         self._company_news_cache: dict[str, list[dict[str, any]]] = {}
         self._backend = backend
+        # When each (data_type, key) was fetched, for freshness revalidation.
+        self._fetched_at: dict[tuple[str, str], float] = {}
 
     def _merge_data(self, existing: list[dict] | None, new_data: list[dict], key_field: str) -> list[dict]:
         """Merge existing and new data, avoiding duplicates based on a key field."""
@@ -50,13 +55,23 @@ class Cache:
     # ------------------------------------------------------------------
 
     def _get(self, data_type: str, store: dict, key: str) -> list[dict[str, any]] | None:
-        """In-memory first; fall back to the persistent backend and warm memory."""
+        """In-memory first; fall back to the persistent backend and warm memory.
+
+        A stale volatile in-memory entry (as-of today, aged past the freshness
+        window) is dropped so the backend — or a fresh fetch — can supply newer
+        data. Immutable (past as-of) entries never go stale.
+        """
         if key in store:
-            return store[key]
+            age = time.time() - self._fetched_at.get((data_type, key), 0.0)
+            if is_fresh(key, age):
+                return store[key]
+            del store[key]
+            self._fetched_at.pop((data_type, key), None)
         if self._backend is not None:
             rows = self._backend.get(data_type, key)
             if rows is not None:
                 store[key] = rows  # warm the in-memory tier
+                self._fetched_at[(data_type, key)] = time.time()
                 return rows
         return None
 
@@ -64,6 +79,7 @@ class Cache:
         """Merge into memory, then write the merged result through to the backend."""
         merged = self._merge_data(store.get(key), data, key_field)
         store[key] = merged
+        self._fetched_at[(data_type, key)] = time.time()
         if self._backend is not None:
             self._backend.set(data_type, key, merged)
 
