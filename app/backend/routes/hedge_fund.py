@@ -126,6 +126,10 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
                     yield ErrorEvent(message="Failed to generate hedge fund decisions").to_sse()
                     return
 
+                # Note: wiki auto-capture happens inside run_graph (executor thread),
+                # not here — the SSE generator is cancelled when the client closes the
+                # stream on completion, so a hook in this coroutine is unreliable.
+
                 # Send the final result
                 final_data = CompleteEvent(
                     data={

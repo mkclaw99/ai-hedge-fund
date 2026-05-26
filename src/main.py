@@ -8,6 +8,7 @@ import questionary
 from src.agents.portfolio_manager import portfolio_management_agent
 from src.agents.risk_manager import risk_management_agent
 from src.graph.state import AgentState
+from src.memory import ingest_run
 from src.utils.display import print_trading_output
 from src.utils.analysts import ANALYST_ORDER, get_analyst_nodes
 from src.utils.progress import progress
@@ -81,6 +82,12 @@ def run_hedge_fund(
                     "model_provider": model_provider,
                 },
             },
+        )
+
+        # Accumulate this run's insights into the research wiki (fail-open).
+        ingest_run(
+            final_state["data"].get("analyst_signals", {}),
+            end_date=end_date,
         )
 
         return {

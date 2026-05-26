@@ -10,6 +10,7 @@ from src.agents.risk_manager import risk_management_agent
 from src.main import start
 from src.utils.analysts import ANALYST_CONFIG
 from src.graph.state import AgentState
+from src.memory import ingest_run
 
 
 def extract_base_agent_key(unique_id: str) -> str:
@@ -153,7 +154,7 @@ def run_graph(
     start date, end date, show reasoning, model name,
     and model provider.
     """
-    return graph.invoke(
+    result = graph.invoke(
         {
             "messages": [
                 HumanMessage(
@@ -175,6 +176,13 @@ def run_graph(
             },
         },
     )
+
+    # Accumulate this run's analyst insights into the research wiki (fail-open).
+    # Hooked here — in the executor thread where the graph truly completes — rather
+    # than in the SSE route, which gets cancelled when the client closes the stream.
+    ingest_run(result.get("data", {}).get("analyst_signals", {}), end_date=end_date)
+
+    return result
 
 
 def parse_hedge_fund_response(response):
