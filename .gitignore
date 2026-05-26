@@ -69,3 +69,6 @@ outputs/
 app/backend/alembic/versions/__pycache__/
 # Generated research wiki (WikiMemory) — local/Obsidian-browsable, not committed
 wiki/
+
+# Persistent Financial Datasets cache (SQLite)
+cache/
