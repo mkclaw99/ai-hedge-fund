@@ -7,7 +7,7 @@ import { CardContent } from '@/components/ui/card';
 import { ModelSelector } from '@/components/ui/llm-selector';
 import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
-import { getModels, LanguageModel } from '@/data/models';
+import { getDefaultModel, getModels, LanguageModel } from '@/data/models';
 import { useNodeState } from '@/hooks/use-node-state';
 import { cn } from '@/lib/utils';
 import { type AgentNode } from '../types';
@@ -41,18 +41,23 @@ export function AgentNode({
   const [availableModels, setAvailableModels] = useNodeState<LanguageModel[]>(id, 'availableModels', []);
   const [selectedModel, setSelectedModel] = useNodeState<LanguageModel | null>(id, 'selectedModel', null);
 
-  // Load models on mount
+  // Load models on mount, defaulting to the system default (Gemini) so a
+  // freshly-dropped analyst uses a working model instead of "Auto", which the
+  // backend resolves to OpenAI and errors on without an OpenAI key.
   useEffect(() => {
     const loadModels = async () => {
       try {
-        const models = await getModels();
+        const [models, defaultModel] = await Promise.all([getModels(), getDefaultModel()]);
         setAvailableModels(models);
+        if (!selectedModel && defaultModel) {
+          setSelectedModel(defaultModel);
+        }
       } catch (error) {
         console.error('Failed to load models:', error);
         // Keep empty array as fallback
       }
     };
-    
+
     loadModels();
   }, [setAvailableModels]);
 
