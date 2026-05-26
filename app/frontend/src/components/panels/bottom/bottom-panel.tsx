@@ -1,12 +1,12 @@
 import { useLayoutContext } from '@/contexts/layout-context';
 import { useResizable } from '@/hooks/use-resizable';
 import { cn } from '@/lib/utils';
-import { FileText, X } from 'lucide-react';
+import { AlertCircle, Bug, FileText, Terminal, X } from 'lucide-react';
 import { ReactNode, useEffect } from 'react';
 import { Button } from '../../ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
-import { OutputTab } from './tabs';
+import { DebugConsoleTab, OutputTab, ProblemsTab, TerminalTab } from './tabs';
 
 interface BottomPanelProps {
   children?: ReactNode;
@@ -17,13 +17,16 @@ interface BottomPanelProps {
   onHeightChange?: (height: number) => void;
 }
 
+const TAB_TRIGGER_CLASS =
+  "flex items-center gap-2 px-3 py-1.5 text-sm data-[state=active]:active-item text-muted-foreground";
+
 export function BottomPanel({
   isCollapsed,
   onToggleCollapse,
   onHeightChange,
 }: BottomPanelProps) {
   const { currentBottomTab, setBottomPanelTab } = useLayoutContext();
-  
+
   // Use our custom hooks for vertical resizing
   const { height, isDragging, elementRef, startResize } = useResizable({
     defaultHeight: 300,
@@ -31,7 +34,7 @@ export function BottomPanel({
     maxHeight: window.innerHeight,
     side: 'bottom',
   });
-  
+
   // Notify parent component of height changes
   useEffect(() => {
     onHeightChange?.(height);
@@ -42,19 +45,19 @@ export function BottomPanel({
   }
 
   return (
-    <div 
+    <div
       ref={elementRef}
       className={cn(
         "bg-panel flex flex-col relative border-t",
         isDragging ? "select-none" : ""
       )}
-      style={{ 
+      style={{
         height: `${height}px`,
       }}
     >
       {/* Resize handle - on the top for bottom panel */}
       {!isDragging && (
-        <div 
+        <div
           className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize transition-all duration-150 z-10 hover-bg"
           onMouseDown={startResize}
         />
@@ -67,10 +70,7 @@ export function BottomPanel({
             <TabsList className="bg-transparent border-none p-0 h-auto">
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <TabsTrigger
-                    value="output"
-                    className="flex items-center gap-2 px-3 py-1.5 text-sm data-[state=active]:active-item text-muted-foreground"
-                  >
+                  <TabsTrigger value="output" className={TAB_TRIGGER_CLASS}>
                     <FileText size={14} />
                     Output
                   </TabsTrigger>
@@ -79,8 +79,44 @@ export function BottomPanel({
                   Results from the latest run — agent progress, a decisions summary, and per-ticker analysis.
                 </TooltipContent>
               </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <TabsTrigger value="terminal" className={TAB_TRIGGER_CLASS}>
+                    <Terminal size={14} />
+                    Terminal
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs">
+                  Raw console output from runs.
+                </TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <TabsTrigger value="problems" className={TAB_TRIGGER_CLASS}>
+                    <AlertCircle size={14} />
+                    Problems
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs">
+                  Configuration and validation issues with the current flow.
+                </TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <TabsTrigger value="debug" className={TAB_TRIGGER_CLASS}>
+                    <Bug size={14} />
+                    Debug Console
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs">
+                  Detailed debug logs and diagnostics from runs.
+                </TooltipContent>
+              </Tooltip>
             </TabsList>
-            
+
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -108,8 +144,17 @@ export function BottomPanel({
           <TabsContent value="output" className="h-full m-0 p-4">
             <OutputTab className="h-full" />
           </TabsContent>
+          <TabsContent value="terminal" className="h-full m-0 p-4">
+            <TerminalTab className="h-full" />
+          </TabsContent>
+          <TabsContent value="problems" className="h-full m-0 p-4">
+            <ProblemsTab className="h-full" />
+          </TabsContent>
+          <TabsContent value="debug" className="h-full m-0 p-4">
+            <DebugConsoleTab className="h-full" />
+          </TabsContent>
         </Tabs>
       </div>
     </div>
   );
-} 
+}
