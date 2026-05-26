@@ -12,7 +12,8 @@ Data (FD API) → Signals → Features → Portfolio Construction → Risk Manag
 
 | Module | Description |
 |--------|-------------|
-| `data/` | Financial Datasets API client and caching layer |
+| `data/` | Data-provider clients behind a shared `DataClient` protocol — `FDClient` (Financial Datasets: prices, fundamentals, earnings, news) and `AlpacaClient` (Alpaca market data: prices + news) |
+| `broker/` | `AlpacaBroker` — read-only Alpaca trading-API client (account, positions, orders) |
 | `event_study/` | Event study framework — CARs, market model, significance testing |
 | `signals/` | Quantitative signal generation (`BaseSignal` ABC with `[-1, +1]` output) |
 | `features/` | Feature engineering — earnings surprise, KPI momentum, cross-sector lead-lag |
@@ -28,7 +29,7 @@ Data (FD API) → Signals → Features → Portfolio Construction → Risk Manag
 - **Costs from day one.** Every backtest includes a transaction cost model. No frictionless fantasies.
 - **Validation built in.** CPCV and PBO are first-class citizens, not afterthoughts. If a signal can't survive combinatorial purged validation, it doesn't ship.
 - **Point-in-time by construction.** The data layer enforces that no future information leaks into historical analysis.
-- **Daily frequency.** Built for daily-bar strategies on US equities using [Financial Datasets](https://financialdatasets.ai) as the sole data provider.
+- **Daily frequency.** Built for daily-bar strategies on US equities. [Financial Datasets](https://financialdatasets.ai) is the primary provider (the only source of fundamentals/earnings); [Alpaca](https://docs.alpaca.markets) is an alternative source for prices and news. Both implement the `DataClient` protocol, so any price-only consumer (e.g. `BacktestEngine.run_signals`) can swap between them.
 
 ## Data Models
 
