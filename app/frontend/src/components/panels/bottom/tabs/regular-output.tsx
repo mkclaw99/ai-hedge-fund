@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { useEffect, useState } from 'react';
 import { getActionColor, getDisplayName, getSignalColor, getStatusIcon } from './output-tab-utils';
@@ -112,13 +113,19 @@ function AnalysisResultsSection({ outputData }: { outputData: any }) {
         <Tabs value={selectedTicker} onValueChange={setSelectedTicker} className="w-full">
           <TabsList className="flex space-x-1 bg-muted p-1 rounded-lg mb-4">
             {tickers.map((ticker) => (
-              <TabsTrigger 
-                key={ticker} 
-                value={ticker} 
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-md transition-colors data-[state=active]:active-bg data-[state=active]:text-blue-500 data-[state=active]:shadow-sm text-primary hover:text-primary hover-bg"
-              >
-                {ticker}
-              </TabsTrigger>
+              <Tooltip key={ticker}>
+                <TooltipTrigger asChild>
+                  <TabsTrigger
+                    value={ticker}
+                    className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-md transition-colors data-[state=active]:active-bg data-[state=active]:text-blue-500 data-[state=active]:shadow-sm text-primary hover:text-primary hover-bg"
+                  >
+                    {ticker}
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {ticker} — each analyst's signal and the final trading decision
+                </TooltipContent>
+              </Tooltip>
             ))}
           </TabsList>
           

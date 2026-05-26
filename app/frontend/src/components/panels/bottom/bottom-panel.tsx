@@ -5,6 +5,7 @@ import { FileText, X } from 'lucide-react';
 import { ReactNode, useEffect } from 'react';
 import { Button } from '../../ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
 import { OutputTab } from './tabs';
 
 interface BottomPanelProps {
@@ -64,24 +65,39 @@ export function BottomPanel({
         <Tabs value={currentBottomTab} onValueChange={setBottomPanelTab} className="flex-1">
           <div className="flex items-center justify-between">
             <TabsList className="bg-transparent border-none p-0 h-auto">
-              <TabsTrigger 
-                value="output"
-                className="flex items-center gap-2 px-3 py-1.5 text-sm data-[state=active]:active-item text-muted-foreground"
-              >
-                <FileText size={14} />
-                Output
-              </TabsTrigger>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <TabsTrigger
+                    value="output"
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm data-[state=active]:active-item text-muted-foreground"
+                  >
+                    <FileText size={14} />
+                    Output
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs">
+                  Results from the latest run — agent progress, a decisions summary, and per-ticker analysis.
+                </TooltipContent>
+              </Tooltip>
             </TabsList>
             
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onToggleCollapse}
-              className="h-6 w-6 text-primary hover-bg"
-              aria-label="Close panel"
-            >
-              <X size={14} />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={onToggleCollapse}
+                  className="h-6 w-6 text-primary hover-bg"
+                  aria-label="Close panel"
+                >
+                  <X size={14} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                Hide panel
+                <span className="ml-2 text-primary-foreground/60">⌘J</span>
+              </TooltipContent>
+            </Tooltip>
           </div>
         </Tabs>
       </div>
