@@ -29,6 +29,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.data.freshness import is_fresh
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_DB = "cache/fd_cache.db"
@@ -68,6 +70,12 @@ class SQLiteCache:
                 return None
             payload, updated_at = row
             if self._is_expired(updated_at):
+                return None
+            # Freshness: serve immutable (past as-of) data forever; re-fetch
+            # volatile (as-of today) data once its timestamp ages out, so newer
+            # filings/prices/news are picked up.
+            age = self._age_seconds(updated_at)
+            if age is not None and not is_fresh(key, age):
                 return None
             return json.loads(payload)
         except (sqlite3.Error, ValueError, TypeError) as exc:
@@ -138,12 +146,17 @@ class SQLiteCache:
                 ")"
             )
 
-    def _is_expired(self, updated_at: str) -> bool:
-        if self.ttl_seconds is None:
-            return False
+    def _age_seconds(self, updated_at: str) -> float | None:
+        """Seconds since the entry was written, or None if the timestamp is bad."""
         try:
             ts = datetime.fromisoformat(updated_at)
-            age = (datetime.now(timezone.utc) - ts).total_seconds()
-            return age > self.ttl_seconds
+            return (datetime.now(timezone.utc) - ts).total_seconds()
         except ValueError:
+            return None
+
+    def _is_expired(self, updated_at: str) -> bool:
+        """Hard global cap (FD_CACHE_TTL_SECONDS); applies to every entry."""
+        if self.ttl_seconds is None:
             return False
+        age = self._age_seconds(updated_at)
+        return age is not None and age > self.ttl_seconds
