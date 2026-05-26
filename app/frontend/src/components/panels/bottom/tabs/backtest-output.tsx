@@ -9,11 +9,7 @@ function BacktestProgress({ agentData }: { agentData: Record<string, any> }) {
   const backtestAgent = agentData['backtest'];
   
   if (!backtestAgent) return null;
-  
-  // Get the latest backtest result from the backtest results array
-  const backtestResults = backtestAgent.backtestResults || [];
-  const latestBacktestResult = backtestResults.length > 0 ? backtestResults[backtestResults.length - 1] : null;
-  
+
   return (
     <Card className="bg-transparent mb-4">
       <CardHeader>
@@ -156,8 +152,6 @@ function BacktestResults({ outputData }: { outputData: any }) {
     return null;
   }
 
-  console.log("outputData", outputData);
-  
   if (!outputData.performance_metrics) {
     return (
       <Card className="bg-transparent mb-4">
@@ -348,21 +342,21 @@ function BacktestPerformanceMetrics({ agentData }: { agentData: Record<string, a
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="text-center">
             <div className="text-xs text-muted-foreground">Total Return</div>
-            <div className={cn("font-sm", totalReturn >= 0 ? "text-green-500" : "text-red-500")}>
+            <div className={cn("text-sm", totalReturn >= 0 ? "text-green-500" : "text-red-500")}>
               {totalReturn >= 0 ? '+' : ''}{totalReturn.toFixed(2)}%
             </div>
           </div>
           <div className="text-center">
             <div className="text-xs text-muted-foreground">Win Rate</div>
-            <div className="font-sm">{winRate.toFixed(1)}%</div>
+            <div className="text-sm">{winRate.toFixed(1)}%</div>
           </div>
           <div className="text-center">
             <div className="text-xs text-muted-foreground">Max Drawdown</div>
-            <div className="font-sm text-red-500">{Math.abs(maxDrawdown).toFixed(2)}%</div>
+            <div className="text-sm text-red-500">{Math.abs(maxDrawdown).toFixed(2)}%</div>
           </div>
           <div className="text-center">
             <div className="text-xs text-muted-foreground">Periods Traded</div>
-            <div className="font-sm">{backtestResults.length}</div>
+            <div className="text-sm">{backtestResults.length}</div>
           </div>
         </div>
         
@@ -370,21 +364,21 @@ function BacktestPerformanceMetrics({ agentData }: { agentData: Record<string, a
         <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="text-center">
             <div className="text-xs text-muted-foreground">Current Value</div>
-            <div className="font-sm">${currentValue?.toLocaleString()}</div>
+            <div className="text-sm">${currentValue?.toLocaleString()}</div>
           </div>
           <div className="text-center">
             <div className="text-xs text-muted-foreground">Initial Value</div>
-            <div className="font-sm">${initialValue?.toLocaleString()}</div>
+            <div className="text-sm">${initialValue?.toLocaleString()}</div>
           </div>
           <div className="text-center">
             <div className="text-xs text-muted-foreground">P&L</div>
-            <div className={cn("font-sm", totalReturn >= 0 ? "text-green-500" : "text-red-500")}>
+            <div className={cn("text-sm", totalReturn >= 0 ? "text-green-500" : "text-red-500")}>
               ${(currentValue - initialValue).toLocaleString()}
             </div>
           </div>
           <div className="text-center">
             <div className="text-xs text-muted-foreground">Long/Short Ratio</div>
-            <div className="font-sm">
+            <div className="text-sm">
               {latestPeriod.long_short_ratio === Infinity || latestPeriod.long_short_ratio === null ? '∞' : latestPeriod.long_short_ratio?.toFixed(2)}
             </div>
           </div>
