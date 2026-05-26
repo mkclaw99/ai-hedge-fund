@@ -1,3 +1,10 @@
+from dotenv import load_dotenv
+
+# Load .env so keys like FINANCIAL_DATASETS_API_KEY and the LLM provider keys
+# are available to the agents/tools via their os.getenv() fallbacks. Does not
+# override anything already set in the environment or sent per-request.
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
