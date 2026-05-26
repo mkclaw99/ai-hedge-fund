@@ -317,10 +317,11 @@ def get_market_cap(
     end_date: str,
     api_key: str = None,
 ) -> float | None:
-    """Fetch market cap from the API."""
-    # Check if end_date is today
+    """Fetch market cap, preferring company facts for today and falling back
+    to the latest financial metrics (which carry market_cap historically)."""
+    # For today's date, company facts has the freshest market cap — but it is
+    # often null, so fall through to financial metrics rather than giving up.
     if end_date == datetime.datetime.now().strftime("%Y-%m-%d"):
-        # Get the market cap from company facts API
         headers = {}
         financial_api_key = api_key or os.environ.get("FINANCIAL_DATASETS_API_KEY")
         if financial_api_key:
@@ -328,24 +329,19 @@ def get_market_cap(
 
         url = f"https://api.financialdatasets.ai/company/facts/?ticker={ticker}"
         response = _make_api_request(url, headers)
-        if response.status_code != 200:
+        if response.status_code == 200:
+            market_cap = CompanyFactsResponse(**response.json()).company_facts.market_cap
+            if market_cap:
+                return market_cap
+        else:
             print(f"Error fetching company facts: {ticker} - {response.status_code}")
-            return None
-
-        data = response.json()
-        response_model = CompanyFactsResponse(**data)
-        return response_model.company_facts.market_cap
+        # fall through to the financial-metrics fallback below
 
     financial_metrics = get_financial_metrics(ticker, end_date, api_key=api_key)
     if not financial_metrics:
         return None
 
-    market_cap = financial_metrics[0].market_cap
-
-    if not market_cap:
-        return None
-
-    return market_cap
+    return financial_metrics[0].market_cap or None
 
 
 def prices_to_df(prices: list[Price]) -> pd.DataFrame:
