@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
+from src.memory import read_back
 
 
 class PortfolioDecision(BaseModel):
@@ -208,6 +209,10 @@ def generate_trading_decision(
     compact_signals = _compact_signals({t: signals_by_ticker.get(t, {}) for t in tickers_for_llm})
     compact_allowed = {t: allowed_actions_full[t] for t in tickers_for_llm}
 
+    # Read-back: accumulated prior research from earlier runs (fail-open, may be empty).
+    # This is the flywheel — the final decision compounds on the wiki's history.
+    prior = read_back(tickers_for_llm)
+
     # Minimal prompt template
     template = ChatPromptTemplate.from_messages(
         [
@@ -215,6 +220,8 @@ def generate_trading_decision(
                 "system",
                 "You are a portfolio manager.\n"
                 "Inputs per ticker: analyst signals and allowed actions with max qty (already validated).\n"
+                "You may also receive prior accumulated research from earlier runs as background — "
+                "weigh it, but the current signals take precedence.\n"
                 "Pick one allowed action per ticker and a quantity ≤ the max. "
                 "Keep reasoning very concise (max 100 chars). No cash or margin math. Return JSON only."
             ),
@@ -222,6 +229,7 @@ def generate_trading_decision(
                 "human",
                 "Signals:\n{signals}\n\n"
                 "Allowed:\n{allowed}\n\n"
+                "Prior research:\n{prior}\n\n"
                 "Format:\n"
                 "{{\n"
                 '  "decisions": {{\n'
@@ -235,6 +243,7 @@ def generate_trading_decision(
     prompt_data = {
         "signals": json.dumps(compact_signals, separators=(",", ":"), ensure_ascii=False),
         "allowed": json.dumps(compact_allowed, separators=(",", ":"), ensure_ascii=False),
+        "prior": prior or "(none on record)",
     }
     prompt = template.invoke(prompt_data)
 
