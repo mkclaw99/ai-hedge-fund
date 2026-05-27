@@ -93,7 +93,7 @@ export function FlowEditDialog({ flow, isOpen, onClose, onFlowUpdated }: FlowEdi
         
         <div className="grid gap-4 py-4">
           <div className="grid gap-2">
-            <label htmlFor="name" className="text-base font-medium">
+            <label htmlFor="name" className="text-lg font-medium">
               Name
             </label>
             <Input
@@ -102,12 +102,12 @@ export function FlowEditDialog({ flow, isOpen, onClose, onFlowUpdated }: FlowEdi
               onChange={(e) => setName(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Enter flow name"
-              className="col-span-3 text-base"
+              className="col-span-3 text-lg h-11"
             />
           </div>
-          
+
           <div className="grid gap-2">
-            <label htmlFor="description" className="text-base font-medium">
+            <label htmlFor="description" className="text-lg font-medium">
               Description
             </label>
             <Input
@@ -116,7 +116,7 @@ export function FlowEditDialog({ flow, isOpen, onClose, onFlowUpdated }: FlowEdi
               onChange={(e) => setDescription(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Enter flow description (optional)"
-              className="col-span-3 text-base"
+              className="col-span-3 text-lg h-11"
             />
           </div>
         </div>

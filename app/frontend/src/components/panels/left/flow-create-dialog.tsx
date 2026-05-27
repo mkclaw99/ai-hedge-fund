@@ -88,7 +88,7 @@ export function FlowCreateDialog({ isOpen, onClose, onFlowCreated }: FlowCreateD
         
         <div className="grid gap-4 py-4">
           <div className="grid gap-2">
-            <label htmlFor="create-name" className="text-base font-medium">
+            <label htmlFor="create-name" className="text-lg font-medium">
               Name
             </label>
             <Input
@@ -97,13 +97,13 @@ export function FlowCreateDialog({ isOpen, onClose, onFlowCreated }: FlowCreateD
               onChange={(e) => setName(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Enter flow name"
-              className="col-span-3 text-base"
+              className="col-span-3 text-lg h-11"
               autoFocus
             />
           </div>
-          
+
           <div className="grid gap-2">
-            <label htmlFor="create-description" className="text-base font-medium">
+            <label htmlFor="create-description" className="text-lg font-medium">
               Description
             </label>
             <Input
@@ -112,7 +112,7 @@ export function FlowCreateDialog({ isOpen, onClose, onFlowCreated }: FlowCreateD
               onChange={(e) => setDescription(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Enter flow description (optional)"
-              className="col-span-3 text-base"
+              className="col-span-3 text-lg h-11"
             />
           </div>
         </div>

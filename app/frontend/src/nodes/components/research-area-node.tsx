@@ -184,27 +184,55 @@ export function ResearchAreaNode({
 
               {/* Max companies + Run */}
               <div className="flex flex-col gap-2">
-                <div className="text-subtitle text-primary">Run</div>
+                <div className="text-subtitle text-primary flex items-center gap-1">
+                  <Tooltip delayDuration={200}>
+                    <TooltipTrigger asChild><span>Max companies to analyze</span></TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs">
+                      How many of the theme's discovered companies to run through the analysts,
+                      ranked by theme exposure. Higher = broader coverage, but slower and more
+                      data/LLM usage.
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
                 <div className="flex gap-2 items-center">
-                  <input
-                    type="number"
-                    min={1}
-                    max={25}
-                    title="Max companies to analyze"
-                    className="nodrag h-10 w-16 rounded-md border border-border bg-node px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    value={maxCompanies}
-                    onChange={(e) => setMaxCompanies(e.target.value.replace(/[^0-9]/g, ''))}
-                  />
-                  <Button
-                    size="icon"
-                    variant="secondary"
-                    className="flex-shrink-0 transition-all duration-200 hover:bg-primary hover:text-primary-foreground active:scale-95"
-                    title={showAsProcessing ? 'Stop' : 'Discover companies and run'}
-                    onClick={showAsProcessing ? stopFlow : handlePlay}
-                    disabled={!canRunResearch && !showAsProcessing}
-                  >
-                    {showAsProcessing ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-                  </Button>
+                  <Tooltip delayDuration={200}>
+                    <TooltipTrigger asChild>
+                      <input
+                        type="number"
+                        min={1}
+                        max={25}
+                        aria-label="Max companies to analyze"
+                        className="nodrag h-10 w-16 rounded-md border border-border bg-node px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        value={maxCompanies}
+                        onChange={(e) => setMaxCompanies(e.target.value.replace(/[^0-9]/g, ''))}
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Number of companies (1–25)</TooltipContent>
+                  </Tooltip>
+                  <Tooltip delayDuration={200}>
+                    {/* span wrapper so the tooltip still shows while the button is
+                        disabled (disabled buttons swallow pointer events) */}
+                    <TooltipTrigger asChild>
+                      <span tabIndex={0} className="inline-flex">
+                        <Button
+                          size="icon"
+                          variant="secondary"
+                          className="flex-shrink-0 transition-all duration-200 hover:bg-primary hover:text-primary-foreground active:scale-95"
+                          onClick={showAsProcessing ? stopFlow : handlePlay}
+                          disabled={!canRunResearch && !showAsProcessing}
+                        >
+                          {showAsProcessing ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                      {showAsProcessing
+                        ? 'Stop the run'
+                        : canRunResearch
+                          ? "Discover the theme's companies and run the analysis"
+                          : 'Select a theme first'}
+                    </TooltipContent>
+                  </Tooltip>
                 </div>
               </div>
             </div>
