@@ -2,12 +2,14 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 import asyncio
+import json
 
 from app.backend.database import get_db
 from app.backend.models.schemas import ErrorResponse, HedgeFundRequest, BacktestRequest, BacktestDayResult, BacktestPerformanceMetrics
 from app.backend.models.events import StartEvent, ProgressUpdateEvent, ErrorEvent, CompleteEvent
 from app.backend.services.graph import create_graph, parse_hedge_fund_response, run_graph_async
 from app.backend.services.portfolio import create_portfolio
+from app.backend.services.research_area import discover_universe
 from app.backend.services.backtest_service import BacktestService
 from app.backend.services.api_key_service import ApiKeyService
 from src.utils.progress import progress
@@ -30,8 +32,8 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
             api_key_service = ApiKeyService(db)
             request_data.api_keys = api_key_service.get_api_keys_dict()
 
-        # Create the portfolio
-        portfolio = create_portfolio(request_data.initial_cash, request_data.margin_requirement, request_data.tickers, request_data.portfolio_positions)
+        # Portfolio is created inside the stream (after research-area discovery,
+        # which may resolve the tickers from a theme).
 
         # Construct agent graph using the React Flow graph structure
         graph = create_graph(
@@ -75,26 +77,56 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
             progress.register_handler(progress_handler)
 
             try:
+                # Send initial message
+                yield StartEvent().to_sse()
+
+                # Research area: resolve the theme into a tradable universe before
+                # running. Discovery delegates to the analyst MCP, then normalizes +
+                # validates tickers against Financial Datasets.
+                tickers = request_data.tickers
+                if request_data.research_theme and not tickers:
+                    yield ProgressUpdateEvent(
+                        agent="research", ticker=None,
+                        status=f"Discovering companies for '{request_data.research_theme}'…",
+                        timestamp=None, analysis=None,
+                    ).to_sse()
+                    disco = await discover_universe(
+                        request_data.research_theme,
+                        max_companies=request_data.research_max_companies or 10,
+                    )
+                    if disco.get("error") or not disco.get("tickers"):
+                        reason = disco.get("error") or "all candidates were foreign, delisted, or name-mismatched"
+                        yield ErrorEvent(message=f"No tradable companies for theme '{request_data.research_theme}': {reason}").to_sse()
+                        return
+                    tickers = disco["tickers"]
+                    request_data.tickers = tickers
+                    yield ProgressUpdateEvent(
+                        agent="research", ticker=None,
+                        status=f"Universe ({len(tickers)}): {', '.join(tickers)}",
+                        timestamp=None, analysis=json.dumps(disco),
+                    ).to_sse()
+
+                # Create the portfolio for the resolved tickers
+                portfolio = create_portfolio(request_data.initial_cash, request_data.margin_requirement, tickers, request_data.portfolio_positions)
+
                 # Start the graph execution in a background task
                 run_task = asyncio.create_task(
                     run_graph_async(
                         graph=graph,
                         portfolio=portfolio,
-                        tickers=request_data.tickers,
+                        tickers=tickers,
                         start_date=request_data.start_date,
                         end_date=request_data.end_date,
                         model_name=request_data.model_name,
                         model_provider=model_provider,
                         request=request_data,  # Pass the full request for agent-specific model access
                         flow_id=request_data.flow_id,  # Scope this run's research memory to its flow
+                        research_materials=request_data.research_materials,  # User grounding for all agents
                     )
                 )
-                
+
                 # Start the disconnect detection task
                 disconnect_task = asyncio.create_task(wait_for_disconnect())
-                
-                # Send initial message
-                yield StartEvent().to_sse()
 
                 # Stream progress updates until run_task completes or client disconnects
                 while not run_task.done():

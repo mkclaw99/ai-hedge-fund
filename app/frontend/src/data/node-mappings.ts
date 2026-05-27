@@ -89,6 +89,18 @@ const baseNodeTypeDefinitions: Record<string, NodeTypeDefinition> = {
       },
     }),
   },
+  "Research Area": {
+    createNode: (position: { x: number, y: number }): AppNode => ({
+      id: `research-area-node_${generateUniqueIdSuffix()}`,
+      type: "research-area-node",
+      position,
+      data: {
+        name: "Research Area",
+        description: "Pick an investment theme and the system discovers its companies, then connect to Analysts to find the sensible investments. Add materials to ground the analysis.",
+        status: "Idle",
+      },
+    }),
+  },
 };
 
 /**
