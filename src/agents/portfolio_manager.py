@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
-from src.memory import read_back
+from src.memory import flow_root, read_back
 
 
 class PortfolioDecision(BaseModel):
@@ -209,9 +209,12 @@ def generate_trading_decision(
     compact_signals = _compact_signals({t: signals_by_ticker.get(t, {}) for t in tickers_for_llm})
     compact_allowed = {t: allowed_actions_full[t] for t in tickers_for_llm}
 
-    # Read-back: accumulated prior research from earlier runs (fail-open, may be empty).
-    # This is the flywheel — the final decision compounds on the wiki's history.
-    prior = read_back(tickers_for_llm)
+    # Read-back: the full cross-analyst history for this flow, including the PM's
+    # own past decisions (fail-open, may be empty). Unlike analyst nodes — which
+    # read only their own prior calls — the PM reads everything, because synthesis
+    # is its job. This is the flywheel: the decision compounds on the flow's wiki.
+    flow_slug = (state.get("metadata", {}) or {}).get("flow_slug")
+    prior = read_back(tickers_for_llm, root=flow_root(flow_slug))
 
     # Minimal prompt template
     template = ChatPromptTemplate.from_messages(

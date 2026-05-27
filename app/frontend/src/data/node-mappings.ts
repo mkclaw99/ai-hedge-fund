@@ -77,6 +77,18 @@ const baseNodeTypeDefinitions: Record<string, NodeTypeDefinition> = {
       },
     }),
   },
+  "Memory": {
+    createNode: (position: { x: number, y: number }): AppNode => ({
+      id: `memory_${generateUniqueIdSuffix()}`,
+      type: "memory-node",
+      position,
+      data: {
+        name: "Memory",
+        description: "This flow's research memory. Analysts read back only their own prior calls; the Portfolio Manager reads everything. It accumulates automatically on every run.",
+        status: "Idle",
+      },
+    }),
+  },
 };
 
 /**

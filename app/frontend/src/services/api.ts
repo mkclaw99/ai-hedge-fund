@@ -97,8 +97,12 @@ export const api = {
     // Helper function to get agent IDs from graph structure
     const getAgentIds = () => params.graph_nodes.map(node => node.id);
 
-    // Pass the unique node IDs directly to the backend
-    const backendParams = params;
+    // Pass the unique node IDs directly to the backend, plus the flow id so the
+    // backend scopes this run's research memory to wiki/flow-<id>.
+    const backendParams: HedgeFundRequest = {
+      ...params,
+      flow_id: flowId != null ? Number(flowId) : undefined,
+    };
 
     // For SSE connections with FastAPI, we need to use POST
     // First, create the controller

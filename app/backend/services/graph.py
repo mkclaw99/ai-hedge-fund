@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import uuid
 from langchain_core.messages import HumanMessage
 from langgraph.graph import END, StateGraph
 
@@ -10,7 +11,7 @@ from src.agents.risk_manager import risk_management_agent
 from src.main import start
 from src.utils.analysts import ANALYST_CONFIG
 from src.graph.state import AgentState
-from src.memory import ingest_run
+from src.memory import flow_root, ingest_decisions, ingest_run
 
 
 def extract_base_agent_key(unique_id: str) -> str:
@@ -130,12 +131,12 @@ def create_graph(graph_nodes: list, graph_edges: list) -> StateGraph:
     return graph
 
 
-async def run_graph_async(graph, portfolio, tickers, start_date, end_date, model_name, model_provider, request=None):
+async def run_graph_async(graph, portfolio, tickers, start_date, end_date, model_name, model_provider, request=None, flow_id=None):
     """Async wrapper for run_graph to work with asyncio."""
     # Use run_in_executor to run the synchronous function in a separate thread
     # so it doesn't block the event loop
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, lambda: run_graph(graph, portfolio, tickers, start_date, end_date, model_name, model_provider, request))  # Use default executor
+    result = await loop.run_in_executor(None, lambda: run_graph(graph, portfolio, tickers, start_date, end_date, model_name, model_provider, request, flow_id))  # Use default executor
     return result
 
 
@@ -148,12 +149,18 @@ def run_graph(
     model_name: str,
     model_provider: str,
     request=None,
+    flow_id=None,
 ) -> dict:
     """
     Run the graph with the given portfolio, tickers,
     start date, end date, show reasoning, model name,
     and model provider.
     """
+    # Each flow keeps its own research memory namespace (wiki/flow-<id>); runs
+    # without a flow id (e.g. an unsaved flow) share a "default" namespace. The
+    # slug rides in metadata so every agent reads/writes the right wiki.
+    flow_slug = f"flow-{flow_id}" if flow_id is not None else "default"
+
     result = graph.invoke(
         {
             "messages": [
@@ -172,15 +179,27 @@ def run_graph(
                 "show_reasoning": False,
                 "model_name": model_name,
                 "model_provider": model_provider,
+                "flow_slug": flow_slug,
                 "request": request,  # Pass the request for agent-specific model access
             },
         },
     )
 
-    # Accumulate this run's analyst insights into the research wiki (fail-open).
-    # Hooked here — in the executor thread where the graph truly completes — rather
-    # than in the SSE route, which gets cancelled when the client closes the stream.
-    ingest_run(result.get("data", {}).get("analyst_signals", {}), end_date=end_date)
+    # Accumulate this run into the flow's research wiki (fail-open). Hooked here —
+    # in the executor thread where the graph truly completes — rather than in the
+    # SSE route, which gets cancelled when the client closes the stream.
+    # All agents write: analysts contribute signals, and the PM contributes its
+    # final decisions, so on later runs each analyst can read its own prior calls
+    # and the PM can read the whole flow's accumulated history.
+    root = flow_root(flow_slug)
+    run_id = uuid.uuid4().hex[:8]
+    ingest_run(result.get("data", {}).get("analyst_signals", {}), end_date=end_date, run_id=run_id, root=root)
+
+    messages = result.get("messages") or []
+    if messages:
+        decisions = parse_hedge_fund_response(messages[-1].content)
+        if isinstance(decisions, dict):
+            ingest_decisions(decisions, end_date=end_date, run_id=run_id, root=root)
 
     return result
 

@@ -13,6 +13,7 @@ import os
 import re
 import uuid
 from datetime import date as _date
+from pathlib import Path
 
 from src.memory.models import Insight
 from src.memory.store import WikiMemory
@@ -23,10 +24,35 @@ logger = logging.getLogger(__name__)
 _NON_ANALYST = ("risk_management", "portfolio_manager")
 _ID_SUFFIX = re.compile(r"_[a-z0-9]{6}$")  # unique node-id suffix used by the app
 
+# Name used for the Portfolio Manager's own decision insights in the wiki.
+PM_ANALYST = "Portfolio Manager"
+
+# Maps a PM decision action to the stance it implies, so decisions read back like
+# any other contributor's signal.
+_ACTION_STANCE = {
+    "buy": "bullish",
+    "cover": "bullish",
+    "sell": "bearish",
+    "short": "bearish",
+    "hold": "neutral",
+}
+
 
 def is_enabled() -> bool:
     """Wiki capture is on unless explicitly disabled via env."""
     return os.environ.get("WIKI_MEMORY_ENABLED", "1") != "0"
+
+
+def flow_root(flow_slug: str | None) -> str | None:
+    """Wiki directory for a flow's memory namespace, e.g. ``wiki/flow-12``.
+
+    Returns None for a falsy slug so callers fall back to the default global
+    wiki (``$WIKI_MEMORY_DIR`` or ``./wiki``) — used by the CLI and any path that
+    doesn't carry a flow id.
+    """
+    if not flow_slug:
+        return None
+    return str(Path("wiki") / flow_slug)
 
 
 def normalize_analyst_name(agent_id: str) -> str:
@@ -91,12 +117,72 @@ def ingest_run(
         return 0
 
 
-def read_back(tickers: list[str], *, root: str | None = None) -> str:
-    """Return a compact prior-research digest for *tickers* (or "" on any issue)."""
+def ingest_decisions(
+    decisions: dict[str, dict],
+    *,
+    end_date: str | None = None,
+    run_id: str | None = None,
+    root: str | None = None,
+) -> int:
+    """Ingest the Portfolio Manager's final decisions as its own wiki insights.
+
+    Analyst signals are captured by :func:`ingest_run`; the PM writes *decisions*
+    (buy/sell/hold) instead, which that path skips. Capturing them here gives the
+    PM a memory of its own past calls to read back on later runs.
+
+    Args:
+        decisions: ``{ticker: {action, quantity, confidence, reasoning}}``
+        end_date:  analysis as-of date; defaults to today.
+        run_id:    groups this run's insights; defaults to a random id.
+        root:      wiki dir override (else $WIKI_MEMORY_DIR or ./wiki).
+
+    Returns the number of decisions written (0 if disabled or nothing to write).
+    Never raises.
+    """
+    if not is_enabled() or not decisions:
+        return 0
+    try:
+        day = (end_date or _date.today().isoformat())[:10]
+        rid = run_id or uuid.uuid4().hex[:8]
+        insights: list[Insight] = []
+        for ticker, payload in decisions.items():
+            if not isinstance(payload, dict):
+                continue
+            action = str(payload.get("action") or "").lower()
+            if not action:
+                continue
+            qty = payload.get("quantity")
+            base_reasoning = str(payload.get("reasoning") or "").strip()
+            reasoning = f"Decided {action}" + (f" {qty}" if qty else "")
+            if base_reasoning:
+                reasoning += f" — {base_reasoning}"
+            insights.append(Insight(
+                ticker=str(ticker).upper(),
+                analyst=PM_ANALYST,
+                signal=_ACTION_STANCE.get(action, "neutral"),
+                confidence=float(payload.get("confidence") or 0.0),
+                reasoning=reasoning,
+                date=day,
+                run_id=rid,
+            ))
+        if not insights:
+            return 0
+        return WikiMemory(root).ingest(insights, run_id=rid)
+    except Exception as exc:  # fail-open: never break a run
+        logger.warning("WikiMemory decision ingest skipped due to error: %s", exc)
+        return 0
+
+
+def read_back(tickers: list[str], *, analyst: str | None = None, root: str | None = None) -> str:
+    """Return a compact prior-research digest for *tickers* (or "" on any issue).
+
+    When *analyst* is given, returns only that analyst's own latest stance per
+    ticker (individual memory); otherwise the full cross-analyst digest.
+    """
     if not is_enabled() or not tickers:
         return ""
     try:
-        return WikiMemory(root).render_context_for_prompt(tickers)
+        return WikiMemory(root).render_context_for_prompt(tickers, analyst=analyst)
     except Exception as exc:  # fail-open
         logger.warning("WikiMemory read-back skipped due to error: %s", exc)
         return ""

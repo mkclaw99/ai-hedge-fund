@@ -92,17 +92,41 @@ class WikiMemory:
             ctx.latest_by_analyst[ins.analyst] = ins
         return ctx
 
-    def render_context_for_prompt(self, tickers: list[str], *, max_reasoning: int = 160) -> str:
+    def render_context_for_prompt(
+        self, tickers: list[str], *, analyst: str | None = None, max_reasoning: int = 160
+    ) -> str:
         """Compact markdown digest of prior research, for LLM prompt injection.
+
+        When *analyst* is given, returns only that analyst's own latest stance per
+        ticker (no cross-analyst consensus header) — this is the "individual memory"
+        an analyst node reads so it stays independent. When *analyst* is None, returns
+        the full cross-analyst digest (consensus + every analyst), as the Portfolio
+        Manager reads it.
 
         Returns "" when there's nothing on record, so callers can cheaply skip
         adding an empty section.
         """
+        def _trim(reasoning: str) -> str:
+            r = reasoning.strip().replace("\n", " ")
+            return r[: max_reasoning - 1] + "…" if len(r) > max_reasoning else r
+
         blocks: list[str] = []
         for t in tickers:
             ctx = self.query_ticker(t)
             if not ctx.latest_by_analyst:
                 continue
+
+            if analyst is not None:
+                # Self-only view: just this analyst's latest call, no consensus.
+                ins = ctx.latest_by_analyst.get(analyst)
+                if ins is None:
+                    continue
+                blocks.append(
+                    f"{ctx.ticker} — your last call ({ins.date}): "
+                    f"{ins.signal} {int(ins.confidence)}% — {_trim(ins.reasoning)}"
+                )
+                continue
+
             lines = [
                 f"{ctx.ticker}: prior consensus {ctx.consensus} "
                 f"({len(ctx.bullish)} bull / {len(ctx.bearish)} bear / "
@@ -114,13 +138,14 @@ class WikiMemory:
                     f"bearish [{', '.join(ctx.bearish)}]."
                 )
             # one terse line per analyst's latest stance
-            for analyst, ins in ctx.latest_by_analyst.items():
-                r = ins.reasoning.strip().replace("\n", " ")
-                if len(r) > max_reasoning:
-                    r = r[: max_reasoning - 1] + "…"
-                lines.append(f"  - {analyst} ({ins.date}): {ins.signal} {int(ins.confidence)}% — {r}")
+            for a, ins in ctx.latest_by_analyst.items():
+                lines.append(f"  - {a} ({ins.date}): {ins.signal} {int(ins.confidence)}% — {_trim(ins.reasoning)}")
             blocks.append("\n".join(lines))
         return "\n".join(blocks)
+
+    def list_tickers(self) -> list[str]:
+        """All tickers with a derived page in this wiki (for UI listing)."""
+        return sorted(p.stem.upper() for p in self.tickers.glob("*.md"))
 
     def lint(self) -> list[str]:
         """Health-check the wiki; return a list of human-readable findings."""

@@ -45,6 +45,12 @@ def call_llm(
         if request and hasattr(request, 'api_keys'):
             api_keys = request.api_keys
 
+    # Inject this agent's own prior research from the flow's memory (fail-open).
+    # Analysts read only their own past calls (stay independent); the Portfolio
+    # Manager reads the full cross-analyst digest itself, so it's skipped here.
+    if state and agent_name and "portfolio_manager" not in agent_name:
+        prompt = _inject_self_memory(prompt, agent_name, state)
+
     model_info = get_model_info(model_name, model_provider)
     llm = get_model(model_name, model_provider, api_keys)
 
@@ -157,6 +163,56 @@ def extract_json_from_response(content: str) -> dict | None:
     except Exception as e:
         print(f"Error extracting JSON from response: {e}")
     return None
+
+
+def _inject_self_memory(prompt, agent_name, state):
+    """Prepend an agent's own prior research (from the flow's memory) to its prompt.
+
+    Reads the flow-scoped wiki for this analyst's own latest calls on the run's
+    tickers and prepends them as a labeled preamble. Fail-open: any problem (no
+    memory, empty digest, odd prompt shape) returns the prompt unchanged.
+    """
+    try:
+        from src.memory import flow_root, normalize_analyst_name, read_back
+
+        data = state.get("data", {}) or {}
+        tickers = data.get("tickers") or []
+        if not tickers:
+            return prompt
+        flow_slug = (state.get("metadata", {}) or {}).get("flow_slug")
+        digest = read_back(
+            tickers,
+            analyst=normalize_analyst_name(agent_name),
+            root=flow_root(flow_slug),
+        )
+        if not digest:
+            return prompt
+
+        preamble = (
+            "Your own prior research on these tickers from earlier runs "
+            "(your view only — stay independent; weigh it, don't just repeat it):\n"
+            f"{digest}"
+        )
+        return _prepend_system_text(prompt, preamble)
+    except Exception:
+        return prompt
+
+
+def _prepend_system_text(prompt, text):
+    """Prepend *text* to a prompt that may be a str, a PromptValue, or a message list."""
+    if isinstance(prompt, str):
+        return f"{text}\n\n{prompt}"
+    try:
+        from langchain_core.messages import SystemMessage
+        from langchain_core.prompt_values import PromptValue
+
+        if isinstance(prompt, PromptValue):
+            return [SystemMessage(content=text), *prompt.to_messages()]
+        if isinstance(prompt, (list, tuple)):
+            return [SystemMessage(content=text), *prompt]
+    except Exception:
+        return prompt
+    return prompt
 
 
 def get_agent_model_config(state, agent_name):
