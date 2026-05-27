@@ -68,11 +68,15 @@ def call_llm(
             method="json_mode",
         )
 
+    # Record token usage for this call (fail-open; works through structured output).
+    from src.utils.token_usage import UsageCallback
+    _usage_cb = {"callbacks": [UsageCallback(model_provider, model_name)]}
+
     # Call the LLM with retries
     for attempt in range(max_retries):
         try:
             # Call the LLM
-            result = llm.invoke(prompt)
+            result = llm.invoke(prompt, config=_usage_cb)
 
             # For non-JSON support models, we need to extract and parse the JSON manually
             if model_info and not model_info.has_json_mode():
