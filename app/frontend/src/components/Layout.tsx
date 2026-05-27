@@ -13,6 +13,7 @@ import { TabService } from '@/services/tab-service';
 import { ReactFlowProvider } from '@xyflow/react';
 import { ReactNode, useEffect, useState } from 'react';
 import { TopBar } from './layout/top-bar';
+import { BottomProgressBar } from './layout/bottom-progress-bar';
 
 // Create a LayoutContent component to access the FlowContext, TabsContext, and LayoutContext
 function LayoutContent({ children }: { children: ReactNode }) {
@@ -151,6 +152,9 @@ function LayoutContent({ children }: { children: ReactNode }) {
           onHeightChange={setBottomPanelHeight}
         />
       </div>
+
+      {/* Global busy indicator pinned to the bottom of the window */}
+      <BottomProgressBar />
     </div>
   );
 }
