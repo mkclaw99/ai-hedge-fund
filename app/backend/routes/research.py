@@ -13,8 +13,6 @@ from app.backend.services.api_key_service import ApiKeyService
 
 router = APIRouter(prefix="/research")
 
-_MAX_PDF_BYTES = 25 * 1024 * 1024  # 25 MB
-
 
 @router.get("/themes")
 async def get_themes():
@@ -42,12 +40,27 @@ async def upload_materials(
     db: Session = Depends(get_db),
 ):
     """Upload a PDF information base: extract text, distill a brief, store both in
-    the flow's wiki. Returns the brief for immediate display."""
+    the flow's wiki. Returns the brief for immediate display.
+
+    Analysis (text extraction + Gemini distillation) runs once per PDF: a re-upload
+    of the identical file returns the cached brief without calling Gemini again. A
+    changed/replacement PDF (different content) is re-analyzed.
+    """
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
-    if len(data) > _MAX_PDF_BYTES:
-        raise HTTPException(status_code=413, detail="PDF too large (max 25 MB)")
+
+    # Same PDF already analyzed for this flow? Return the cached brief, no re-distill.
+    digest = materials.source_hash(data)
+    if materials.load_source_hash(flow_id) == digest:
+        status = materials.materials_status(flow_id)
+        if status.get("has_brief"):
+            return {
+                "filename": status.get("filename"),
+                "brief": status.get("brief"),
+                "cached": True,
+            }
+
     try:
         text = materials.extract_pdf_text(data)
     except ValueError as e:
@@ -55,8 +68,14 @@ async def upload_materials(
 
     api_keys = ApiKeyService(db).get_api_keys_dict()
     brief = materials.distill_brief(text, api_keys=api_keys)
-    materials.store_materials(flow_id, source_text=text, brief=brief, filename=file.filename or "upload.pdf")
-    return {"filename": file.filename, "source_chars": len(text), "brief": brief}
+    materials.store_materials(
+        flow_id,
+        source_text=text,
+        brief=brief,
+        filename=file.filename or "upload.pdf",
+        content_hash=digest,
+    )
+    return {"filename": file.filename, "source_chars": len(text), "brief": brief, "cached": False}
 
 
 @router.get("/materials")

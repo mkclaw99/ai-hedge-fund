@@ -7,6 +7,7 @@ to distill it into a compact investment brief, and store both in the flow's wiki
 a truncated excerpt so the upload still yields usable grounding.
 """
 
+import hashlib
 import io
 import logging
 import os
@@ -42,6 +43,29 @@ def _materials_dir(flow_id: int) -> Path | None:
     d = Path(root) / "materials"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def source_hash(data: bytes) -> str:
+    """SHA-256 of the raw upload — identifies a PDF so it's only analyzed once.
+
+    A re-upload of the identical file produces the same hash (cache hit, skip the
+    Gemini distill); a changed/replacement PDF produces a new hash (re-analyze).
+    """
+    return hashlib.sha256(data).hexdigest()
+
+
+def load_source_hash(flow_id: int | None) -> str | None:
+    """Return the content hash of the last analyzed PDF for a flow (or None)."""
+    if flow_id is None:
+        return None
+    try:
+        d = _materials_dir(flow_id)
+        if d is None:
+            return None
+        f = d / "source_hash.txt"
+        return f.read_text(encoding="utf-8").strip() if f.exists() else None
+    except Exception:
+        return None
 
 
 def extract_pdf_text(data: bytes) -> str:
@@ -80,8 +104,14 @@ def distill_brief(text: str, *, api_keys: dict | None = None) -> str:
     return f"## Source excerpt\n\n{fallback}{suffix}"
 
 
-def store_materials(flow_id: int, *, source_text: str, brief: str, filename: str) -> None:
-    """Persist the full source text and the distilled brief in the flow's wiki."""
+def store_materials(
+    flow_id: int, *, source_text: str, brief: str, filename: str, content_hash: str | None = None
+) -> None:
+    """Persist the full source text and the distilled brief in the flow's wiki.
+
+    Also records the PDF's ``content_hash`` so a later identical upload is detected
+    as already-analyzed and skips re-distillation.
+    """
     d = _materials_dir(flow_id)
     if d is None:
         return
@@ -89,6 +119,8 @@ def store_materials(flow_id: int, *, source_text: str, brief: str, filename: str
     (d / "source.txt").write_text(source_text, encoding="utf-8")
     (d / "brief.md").write_text(header + brief, encoding="utf-8")
     (d / "source_name.txt").write_text(filename, encoding="utf-8")
+    if content_hash:
+        (d / "source_hash.txt").write_text(content_hash, encoding="utf-8")
 
 
 def load_brief(flow_id: int | None) -> str:
