@@ -162,41 +162,60 @@ def run_graph(
     # slug rides in metadata so every agent reads/writes the right wiki.
     flow_slug = f"flow-{flow_id}" if flow_id is not None else "default"
 
-    result = graph.invoke(
-        {
-            "messages": [
-                HumanMessage(
-                    content="Make trading decisions based on the provided data.",
-                )
-            ],
-            "data": {
-                "tickers": tickers,
-                "portfolio": portfolio,
-                "start_date": start_date,
-                "end_date": end_date,
-                "analyst_signals": {},
-            },
-            "metadata": {
-                "show_reasoning": False,
-                "model_name": model_name,
-                "model_provider": model_provider,
-                "flow_slug": flow_slug,
-                "research_materials": research_materials,  # Research-area grounding for all agents
-                "request": request,  # Pass the request for agent-specific model access
-            },
-        },
-    )
-
-    # Accumulate this run into the flow's research wiki (fail-open). Hooked here —
-    # in the executor thread where the graph truly completes — rather than in the
-    # SSE route, which gets cancelled when the client closes the stream.
-    # All agents write: analysts contribute signals, and the PM contributes its
-    # final decisions, so on later runs each analyst can read its own prior calls
-    # and the PM can read the whole flow's accumulated history.
+    # Accumulate this run into the flow's research wiki (fail-open). We stream the
+    # graph and ingest each analyst signal as soon as it appears, so a run that
+    # completes some analysts but then stalls/fails later (e.g. rate limits on the
+    # PM) still captures what finished — rather than the all-or-nothing ingest that
+    # only fired after the whole graph completed. Each (agent, ticker) is ingested
+    # once via `seen`; ingest_run is idempotent per insight anyway.
     root = flow_root(flow_slug)
     run_id = uuid.uuid4().hex[:8]
-    ingest_run(result.get("data", {}).get("analyst_signals", {}), end_date=end_date, run_id=run_id, root=root)
+    seen_signals: set[tuple[str, str]] = set()
 
+    def _ingest_new(signals: dict) -> None:
+        new: dict[str, dict] = {}
+        for agent_id, per_ticker in (signals or {}).items():
+            if not isinstance(per_ticker, dict):
+                continue
+            for ticker, payload in per_ticker.items():
+                key = (str(agent_id), str(ticker))
+                if key in seen_signals:
+                    continue
+                seen_signals.add(key)
+                new.setdefault(agent_id, {})[ticker] = payload
+        if new:
+            ingest_run(new, end_date=end_date, run_id=run_id, root=root)
+
+    inputs = {
+        "messages": [
+            HumanMessage(content="Make trading decisions based on the provided data.")
+        ],
+        "data": {
+            "tickers": tickers,
+            "portfolio": portfolio,
+            "start_date": start_date,
+            "end_date": end_date,
+            "analyst_signals": {},
+        },
+        "metadata": {
+            "show_reasoning": False,
+            "model_name": model_name,
+            "model_provider": model_provider,
+            "flow_slug": flow_slug,
+            "research_materials": research_materials,  # Research-area grounding for all agents
+            "request": request,  # Pass the request for agent-specific model access
+        },
+    }
+
+    # stream_mode="values" yields the full accumulating state after each step; the
+    # last chunk equals what graph.invoke() would have returned.
+    result: dict = {}
+    for chunk in graph.stream(inputs, stream_mode="values"):
+        result = chunk
+        _ingest_new(chunk.get("data", {}).get("analyst_signals", {}))
+
+    # Final pass for any signals not seen in a yielded chunk, then the PM's decisions.
+    _ingest_new(result.get("data", {}).get("analyst_signals", {}))
     messages = result.get("messages") or []
     if messages:
         decisions = parse_hedge_fund_response(messages[-1].content)

@@ -158,14 +158,12 @@ export function FlowProvider({ children }: FlowProviderProps) {
       reactFlowInstance.setNodes(flow.nodes || []);
       reactFlowInstance.setEdges(flow.edges || []);
       
-      if (flow.viewport) {
-        reactFlowInstance.setViewport(flow.viewport);
-      } else {
-        // Fit view if no viewport data
-        setTimeout(() => {
-          reactFlowInstance.fitView();
-        }, 100);
-      }
+      // Always fit the nodes into view on open so nothing is left off-screen
+      // (a saved viewport can be panned away from the nodes — that's confusing,
+      // e.g. it makes the Memory node impossible to find).
+      setTimeout(() => {
+        reactFlowInstance.fitView({ padding: 0.15, duration: 400 });
+      }, 120);
 
       setIsUnsaved(false);
       

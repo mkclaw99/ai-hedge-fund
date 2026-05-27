@@ -1,12 +1,12 @@
 import { useLayoutContext } from '@/contexts/layout-context';
 import { useResizable } from '@/hooks/use-resizable';
 import { cn } from '@/lib/utils';
-import { AlertCircle, Bug, FileText, Terminal, X } from 'lucide-react';
+import { AlertCircle, Bug, Database, FileText, Terminal, X } from 'lucide-react';
 import { ReactNode, useEffect } from 'react';
 import { Button } from '../../ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
-import { DebugConsoleTab, OutputTab, ProblemsTab, TerminalTab } from './tabs';
+import { DebugConsoleTab, MemoryTab, OutputTab, ProblemsTab, TerminalTab } from './tabs';
 
 interface BottomPanelProps {
   children?: ReactNode;
@@ -115,6 +115,19 @@ export function BottomPanel({
                   Detailed debug logs and diagnostics from runs.
                 </TooltipContent>
               </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <TabsTrigger value="memory" className={TAB_TRIGGER_CLASS}>
+                    <Database size={14} />
+                    Memory
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs">
+                  This flow&apos;s accumulated research memory — what the analysts and PM
+                  have learned across runs.
+                </TooltipContent>
+              </Tooltip>
             </TabsList>
 
             <Tooltip>
@@ -152,6 +165,9 @@ export function BottomPanel({
           </TabsContent>
           <TabsContent value="debug" className="h-full m-0 p-4">
             <DebugConsoleTab className="h-full" />
+          </TabsContent>
+          <TabsContent value="memory" className="h-full m-0 p-4">
+            <MemoryTab className="h-full" />
           </TabsContent>
         </Tabs>
       </div>
