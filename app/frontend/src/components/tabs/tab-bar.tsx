@@ -1,7 +1,10 @@
 import { Button } from '@/components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { FlowCreateDialog } from '@/components/panels/left/flow-create-dialog';
 import { useTabsContext } from '@/contexts/tabs-context';
+import { useFlowManagementTabs } from '@/hooks/use-flow-management-tabs';
 import { cn } from '@/lib/utils';
-import { FileText, Layout, Settings, X } from 'lucide-react';
+import { ChevronDown, FileText, FolderOpen, Layout, Plus, Settings, Trash2, X } from 'lucide-react';
 import { ReactNode, useState } from 'react';
 
 interface TabBarProps {
@@ -22,12 +25,18 @@ const getTabIcon = (type: string): ReactNode => {
 
 export function TabBar({ className }: TabBarProps) {
   const { tabs, activeTabId, setActiveTab, closeTab, reorderTabs } = useTabsContext();
+  const {
+    flows,
+    createDialogOpen,
+    setCreateDialogOpen,
+    handleCreateNewFlow,
+    handleFlowCreated,
+    handleOpenFlowInTab,
+    handleDeleteFlow,
+  } = useFlowManagementTabs();
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
-
-  if (tabs.length === 0) {
-    return null;
-  }
+  const [flowsOpen, setFlowsOpen] = useState(false);
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
     setDraggedIndex(index);
@@ -38,23 +47,18 @@ export function TabBar({ className }: TabBarProps) {
   const handleDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    
     if (draggedIndex !== null && draggedIndex !== index) {
       setDragOverIndex(index);
     }
   };
 
-  const handleDragLeave = () => {
-    setDragOverIndex(null);
-  };
+  const handleDragLeave = () => setDragOverIndex(null);
 
   const handleDrop = (e: React.DragEvent, dropIndex: number) => {
     e.preventDefault();
-    
     if (draggedIndex !== null && draggedIndex !== dropIndex) {
       reorderTabs(draggedIndex, dropIndex);
     }
-    
     setDraggedIndex(null);
     setDragOverIndex(null);
   };
@@ -65,11 +69,9 @@ export function TabBar({ className }: TabBarProps) {
   };
 
   return (
-    <div className={cn(
-      "flex items-center bg-panel border-b overflow-x-auto",
-      className
-    )}>
-      <div className="flex items-center min-w-0">
+    <div className={cn("flex items-stretch bg-panel border-b", className)}>
+      {/* Scrollable tab strip */}
+      <div className="flex items-center overflow-x-auto flex-1 min-w-0">
         {tabs.map((tab, index) => (
           <div
             key={tab.id}
@@ -80,12 +82,10 @@ export function TabBar({ className }: TabBarProps) {
             onDrop={(e) => handleDrop(e, index)}
             onDragEnd={handleDragEnd}
             className={cn(
-              "group relative flex items-center gap-2 px-4 py-2.5 cursor-pointer transition-all duration-150 min-w-0 max-w-52 select-none last:border-r-0",
-              // Active tab styling - VSCode style
-              activeTabId === tab.id 
-                ? "bg-panel before:absolute before:bottom-0 before:left-0 before:right-0 before:h-0.5 before:content-['']" 
+              "group relative flex items-center gap-2 px-4 py-2.5 cursor-pointer transition-all duration-150 flex-shrink-0 max-w-52 select-none",
+              activeTabId === tab.id
+                ? "bg-panel before:absolute before:bottom-0 before:left-0 before:right-0 before:h-0.5 before:content-['']"
                 : "bg-panel hover:bg-[var(--tab-hover-background)]",
-              // Drag states
               draggedIndex === index && "opacity-60 scale-[0.98]",
               dragOverIndex === index && "ring-1 ring-[var(--tab-accent)]/30",
               "hover:cursor-grab active:cursor-grabbing"
@@ -96,44 +96,28 @@ export function TabBar({ className }: TabBarProps) {
               backgroundColor: dragOverIndex === index ? 'var(--tab-hover-background)' : undefined,
             }}
             onMouseEnter={(e) => {
-              if (activeTabId !== tab.id) {
-                e.currentTarget.style.color = 'var(--tab-hover-text)';
-              }
+              if (activeTabId !== tab.id) e.currentTarget.style.color = 'var(--tab-hover-text)';
             }}
             onMouseLeave={(e) => {
-              if (activeTabId !== tab.id) {
-                e.currentTarget.style.color = 'var(--tab-inactive-text)';
-              }
+              if (activeTabId !== tab.id) e.currentTarget.style.color = 'var(--tab-inactive-text)';
             }}
             onClick={() => setActiveTab(tab.id)}
           >
-            {/* Active tab accent bar */}
             {activeTabId === tab.id && (
-              <div 
-                className="absolute bottom-0 left-0 right-0 h-0.5"
-                style={{ backgroundColor: 'var(--tab-accent)' }}
-              />
+              <div className="absolute bottom-0 left-0 right-0 h-0.5" style={{ backgroundColor: 'var(--tab-accent)' }} />
             )}
 
-            {/* Tab Icon */}
-            <div className={cn(
-              "flex-shrink-0 transition-colors duration-150",
-              activeTabId === tab.id ? "text-primary" : ""
-            )}
-            style={{
-              color: activeTabId === tab.id ? 'var(--tab-icon-active)' : 'var(--tab-icon-inactive)'
-            }}>
+            <div
+              className={cn("flex-shrink-0 transition-colors duration-150", activeTabId === tab.id ? "text-primary" : "")}
+              style={{ color: activeTabId === tab.id ? 'var(--tab-icon-active)' : 'var(--tab-icon-inactive)' }}
+            >
               {getTabIcon(tab.type)}
             </div>
 
-            {/* Tab Title */}
-            <span className={cn(
-              "text-[13px] font-normal truncate min-w-0 transition-colors duration-150"
-            )}>
+            <span className="text-[13px] font-normal truncate min-w-0 transition-colors duration-150">
               {tab.title}
             </span>
 
-            {/* Close Button */}
             <Button
               variant="ghost"
               size="sm"
@@ -154,18 +138,80 @@ export function TabBar({ className }: TabBarProps) {
                 e.stopPropagation();
                 closeTab(tab.id);
               }}
-              onMouseDown={(e) => e.stopPropagation()} // Prevent drag when clicking close button
+              onMouseDown={(e) => e.stopPropagation()}
               title="Close tab"
             >
               <X size={11} className="transition-transform duration-150 hover:scale-110" />
             </Button>
-
-            {/* Modified indicator dot for unsaved changes - VSCode style */}
-            {/* You can add this when you implement unsaved changes tracking */}
-            {/* <div className="absolute top-1/2 left-1 w-1.5 h-1.5 rounded-full transform -translate-y-1/2" style={{ backgroundColor: 'var(--tab-active-text)' }} /> */}
           </div>
         ))}
       </div>
+
+      {/* Pinned flow actions — replaces the old left Flows sidebar */}
+      <div className="flex items-center flex-shrink-0 gap-0.5 px-1.5 border-l bg-panel">
+        <Popover open={flowsOpen} onOpenChange={setFlowsOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1 text-xs text-muted-foreground hover:text-foreground"
+              title="Open a saved flow"
+            >
+              <FolderOpen size={13} />
+              Flows
+              <ChevronDown size={12} />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-64 p-1 max-h-80 overflow-auto">
+            {(flows?.length ?? 0) === 0 ? (
+              <div className="px-2 py-3 text-center text-xs text-muted-foreground">No saved flows yet</div>
+            ) : (
+              flows.map((flow) => (
+                <div
+                  key={flow.id}
+                  role="button"
+                  className="group flex items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-sm cursor-pointer hover:bg-accent"
+                  onClick={() => {
+                    handleOpenFlowInTab(flow);
+                    setFlowsOpen(false);
+                  }}
+                >
+                  <span className="truncate">{flow.name}</span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-5 w-5 flex-shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-red-500"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteFlow(flow);
+                    }}
+                    title={`Delete "${flow.name}"`}
+                  >
+                    <Trash2 size={12} />
+                  </Button>
+                </div>
+              ))
+            )}
+          </PopoverContent>
+        </Popover>
+
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1 text-xs text-muted-foreground hover:text-foreground"
+          onClick={handleCreateNewFlow}
+          title="Create a new flow"
+        >
+          <Plus size={14} />
+          New Flow
+        </Button>
+      </div>
+
+      <FlowCreateDialog
+        isOpen={createDialogOpen}
+        onClose={() => setCreateDialogOpen(false)}
+        onFlowCreated={handleFlowCreated}
+      />
     </div>
   );
-} 
+}
