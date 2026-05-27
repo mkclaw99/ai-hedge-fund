@@ -1,10 +1,13 @@
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { FlowCreateDialog } from '@/components/panels/left/flow-create-dialog';
+import { FlowEditDialog } from '@/components/panels/left/flow-edit-dialog';
 import { useTabsContext } from '@/contexts/tabs-context';
 import { useFlowManagementTabs } from '@/hooks/use-flow-management-tabs';
+import { flowService } from '@/services/flow-service';
+import { Flow } from '@/types/flow';
 import { cn } from '@/lib/utils';
-import { ChevronDown, FileText, FolderOpen, Layout, Plus, Settings, Trash2, X } from 'lucide-react';
+import { ChevronDown, Copy, FileText, FolderOpen, Layout, Pencil, Plus, Settings, Trash2, X } from 'lucide-react';
 import { ReactNode, useState } from 'react';
 
 interface TabBarProps {
@@ -33,10 +36,22 @@ export function TabBar({ className }: TabBarProps) {
     handleFlowCreated,
     handleOpenFlowInTab,
     handleDeleteFlow,
+    handleRefresh,
   } = useFlowManagementTabs();
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [flowsOpen, setFlowsOpen] = useState(false);
+  const [editingFlow, setEditingFlow] = useState<Flow | null>(null);
+
+  const handleDuplicateFlow = async (flow: Flow) => {
+    try {
+      const copy = await flowService.duplicateFlow(flow.id);
+      await handleRefresh();
+      if (copy) await handleOpenFlowInTab(copy);
+    } catch (error) {
+      console.error('Failed to duplicate flow:', error);
+    }
+  };
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
     setDraggedIndex(index);
@@ -177,18 +192,46 @@ export function TabBar({ className }: TabBarProps) {
                   }}
                 >
                   <span className="truncate">{flow.name}</span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-5 w-5 flex-shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-red-500"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeleteFlow(flow);
-                    }}
-                    title={`Delete "${flow.name}"`}
-                  >
-                    <Trash2 size={12} />
-                  </Button>
+                  <div className="flex items-center flex-shrink-0 gap-0.5 opacity-0 group-hover:opacity-100">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingFlow(flow);
+                        setFlowsOpen(false);
+                      }}
+                      title={`Rename "${flow.name}"`}
+                    >
+                      <Pencil size={12} />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFlowsOpen(false);
+                        handleDuplicateFlow(flow);
+                      }}
+                      title={`Duplicate "${flow.name}"`}
+                    >
+                      <Copy size={12} />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 text-muted-foreground hover:text-red-500"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteFlow(flow);
+                      }}
+                      title={`Delete "${flow.name}"`}
+                    >
+                      <Trash2 size={12} />
+                    </Button>
+                  </div>
                 </div>
               ))
             )}
@@ -211,6 +254,13 @@ export function TabBar({ className }: TabBarProps) {
         isOpen={createDialogOpen}
         onClose={() => setCreateDialogOpen(false)}
         onFlowCreated={handleFlowCreated}
+      />
+
+      <FlowEditDialog
+        flow={editingFlow}
+        isOpen={!!editingFlow}
+        onClose={() => setEditingFlow(null)}
+        onFlowUpdated={handleRefresh}
       />
     </div>
   );
