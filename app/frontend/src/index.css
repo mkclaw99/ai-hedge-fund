@@ -351,6 +351,18 @@
   border-right: none !important;
 }
 
+/* Indeterminate progress bar (bottom-of-window busy indicator) */
+@keyframes indeterminate-progress {
+  0% { transform: translateX(-110%) scaleX(0.5); }
+  50% { transform: translateX(60%) scaleX(0.9); }
+  100% { transform: translateX(260%) scaleX(0.5); }
+}
+.animate-indeterminate {
+  animation: indeterminate-progress 1.2s ease-in-out infinite;
+  transform-origin: left center;
+  will-change: transform;
+}
+
 .react-flow__controls .react-flow__controls-button + .react-flow__controls-button {
   border-left: none !important;
 }

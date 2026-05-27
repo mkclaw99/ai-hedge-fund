@@ -63,6 +63,14 @@ class FlowConnectionManager {
     this.listeners.delete(listener);
   }
 
+  // True if any flow is mid-run (connecting or connected) — drives the progress bar.
+  hasActiveConnections(): boolean {
+    for (const c of this.connections.values()) {
+      if (c.state === 'connecting' || c.state === 'connected') return true;
+    }
+    return false;
+  }
+
   // Notify all listeners of changes
   private notifyListeners(): void {
     this.listeners.forEach(listener => listener());
