@@ -1,5 +1,4 @@
 import { BottomPanel } from '@/components/panels/bottom/bottom-panel';
-import { LeftSidebar } from '@/components/panels/left/left-sidebar';
 import { RightSidebar } from '@/components/panels/right/right-sidebar';
 import { TabBar } from '@/components/tabs/tab-bar';
 import { TabContent } from '@/components/tabs/tab-content';
@@ -31,7 +30,6 @@ function LayoutContent({ children }: { children: ReactNode }) {
   );
 
   // Track actual sidebar widths for dynamic positioning
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(280);
   const [rightSidebarWidth, setRightSidebarWidth] = useState(280);
   const [bottomPanelHeight, setBottomPanelHeight] = useState(300);
 
@@ -63,19 +61,11 @@ function LayoutContent({ children }: { children: ReactNode }) {
 
   // Calculate tab bar and bottom panel positioning based on actual sidebar widths
   const getSidebarBasedStyle = () => {
-    let left = 0;
-    let right = 0;
-    
-    if (!isLeftCollapsed) {
-      left = leftSidebarWidth;
-    }
-    
-    if (!isRightCollapsed) {
-      right = rightSidebarWidth;
-    }
-    
+    // Flow navigation now lives in the top tab bar, so there's no left sidebar
+    // to offset for — only the right (components) sidebar.
+    const right = !isRightCollapsed ? rightSidebarWidth : 0;
     return {
-      left: `${left}px`,
+      left: '0px',
       right: `${right}px`,
     };
   };
@@ -104,10 +94,8 @@ function LayoutContent({ children }: { children: ReactNode }) {
     <div className="flex h-screen w-screen overflow-hidden relative bg-background">
       {/* VSCode-style Top Bar */}
       <TopBar
-        isLeftCollapsed={isLeftCollapsed}
         isRightCollapsed={isRightCollapsed}
         isBottomCollapsed={isBottomCollapsed}
-        onToggleLeft={() => setIsLeftCollapsed(!isLeftCollapsed)}
         onToggleRight={() => setIsRightCollapsed(!isRightCollapsed)}
         onToggleBottom={toggleBottomPanel}
         onSettingsClick={handleSettingsClick}
@@ -122,10 +110,10 @@ function LayoutContent({ children }: { children: ReactNode }) {
       </div>
 
       {/* Main content area */}
-      <main 
-        className="absolute inset-0 overflow-hidden" 
+      <main
+        className="absolute inset-0 overflow-hidden"
         style={{
-          left: !isLeftCollapsed ? `${leftSidebarWidth}px` : '0px',
+          left: '0px',
           right: !isRightCollapsed ? `${rightSidebarWidth}px` : '0px',
           top: '40px', // Tab bar height
           bottom: !isBottomCollapsed ? `${bottomPanelHeight}px` : '0px',
@@ -133,19 +121,6 @@ function LayoutContent({ children }: { children: ReactNode }) {
       >
         <TabContent className="h-full w-full" />
       </main>
-
-      {/* Floating left sidebar */}
-      <div className={cn(
-        "absolute top-0 left-0 z-30 h-full transition-transform",
-        isLeftCollapsed && "transform -translate-x-full opacity-0"
-      )}>
-        <LeftSidebar
-          isCollapsed={isLeftCollapsed}
-          onCollapse={() => setIsLeftCollapsed(true)}
-          onExpand={() => setIsLeftCollapsed(false)}
-          onWidthChange={setLeftSidebarWidth}
-        />
-      </div>
 
       {/* Floating right sidebar */}
       <div className={cn(

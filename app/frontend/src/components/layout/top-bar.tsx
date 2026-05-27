@@ -1,51 +1,25 @@
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { PanelBottom, PanelLeft, PanelRight, Settings } from 'lucide-react';
+import { PanelBottom, PanelRight, Settings } from 'lucide-react';
 
 interface TopBarProps {
-  isLeftCollapsed: boolean;
   isRightCollapsed: boolean;
   isBottomCollapsed: boolean;
-  onToggleLeft: () => void;
   onToggleRight: () => void;
   onToggleBottom: () => void;
   onSettingsClick: () => void;
 }
 
 export function TopBar({
-  isLeftCollapsed,
   isRightCollapsed,
   isBottomCollapsed,
-  onToggleLeft,
   onToggleRight,
   onToggleBottom,
   onSettingsClick,
 }: TopBarProps) {
   return (
     <div className="absolute top-0 right-0 z-40 flex items-center gap-0 py-1 px-2 bg-panel/80">
-      {/* Left Sidebar Toggle */}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onToggleLeft}
-            className={cn(
-              "h-8 w-8 p-0 text-muted-foreground hover:text-foreground hover:bg-ramp-grey-700 transition-colors",
-              !isLeftCollapsed && "text-foreground"
-            )}
-            aria-label="Toggle left sidebar"
-          >
-            <PanelLeft size={16} />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">
-          Show/hide the flows sidebar
-          <span className="ml-2 text-primary-foreground/60">⌘B</span>
-        </TooltipContent>
-      </Tooltip>
-
       {/* Bottom Panel Toggle */}
       <Tooltip>
         <TooltipTrigger asChild>
