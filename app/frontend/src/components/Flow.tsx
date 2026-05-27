@@ -5,6 +5,7 @@ import {
   Connection,
   Edge,
   EdgeChange,
+  Controls,
   MarkerType,
   NodeChange,
   Panel,
@@ -310,13 +311,20 @@ export function Flow({ className = '' }: FlowProps) {
           onInit={onInit}
           colorMode={colorMode}
           proOptions={proOptions}
+          minZoom={0.1}
+          maxZoom={2}
+          zoomOnScroll
+          zoomOnPinch
+          zoomOnDoubleClick
         >
-          <Background 
+          <Background
             variant={BackgroundVariant.Dots}
             gap={13}
             color={gridColor}
             style={backgroundStyle}
           />
+          {/* Zoom in / out / fit-view / lock controls */}
+          <Controls position="bottom-left" showInteractive={false} />
           {/* Undo / Redo controls (history lives in useFlowHistory, per flow) */}
           <Panel position="top-left" className="m-2">
             <div className="flex items-center gap-1 rounded-md border border-border bg-node p-1 shadow-md">
