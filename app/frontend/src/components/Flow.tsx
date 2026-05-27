@@ -7,11 +7,13 @@ import {
   EdgeChange,
   MarkerType,
   NodeChange,
+  Panel,
   ReactFlow,
   addEdge,
   useEdgesState,
   useNodesState
 } from '@xyflow/react';
+import { Redo2, Undo2 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -25,7 +27,7 @@ import { useToastManager } from '@/hooks/use-toast-manager';
 import { AppNode } from '@/nodes/types';
 import { edgeTypes } from '../edges';
 import { nodeTypes } from '../nodes';
-import { TooltipProvider } from './ui/tooltip';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 
 type FlowProps = {
   className?: string;
@@ -159,12 +161,16 @@ export function Flow({ className = '' }: FlowProps) {
     }
   }, [currentFlowId]);
 
-  // Take initial snapshot when flow is initialized
+  // Take an initial empty-canvas baseline ONLY for a brand-new (unsaved) flow, so the
+  // first edits can be undone back to empty. For a saved flow being opened, the loaded
+  // state is the baseline (captured by the change effect below) — we must NOT snapshot
+  // the transient empty canvas first, or "Undo" right after opening would wipe the
+  // freshly-loaded flow instead of reverting a user action.
   useEffect(() => {
-    if (isInitialized && nodes.length === 0 && edges.length === 0) {
+    if (isInitialized && currentFlowId == null && nodes.length === 0 && edges.length === 0) {
       takeSnapshot();
     }
-  }, [isInitialized, takeSnapshot, nodes.length, edges.length]);
+  }, [isInitialized, currentFlowId, takeSnapshot, nodes.length, edges.length]);
 
   // Take snapshot when nodes or edges change (debounced)
   useEffect(() => {
@@ -208,6 +214,12 @@ export function Flow({ className = '' }: FlowProps) {
     }
   });
 
+  // Undo/redo restore state via setNodes/setEdges (which don't go through the change
+  // handlers), so trigger an auto-save afterwards — otherwise the reverted state isn't
+  // persisted and would be lost on reload (the original edit already auto-saved).
+  const handleUndo = useCallback(() => { undo(); autoSave(); }, [undo, autoSave]);
+  const handleRedo = useCallback(() => { redo(); autoSave(); }, [redo, autoSave]);
+
   // Add undo/redo keyboard shortcuts
   useKeyboardShortcuts({
     shortcuts: [
@@ -215,7 +227,7 @@ export function Flow({ className = '' }: FlowProps) {
         key: 'z',
         ctrlKey: true,
         metaKey: true,
-        callback: undo,
+        callback: handleUndo,
         preventDefault: true,
       },
       {
@@ -223,7 +235,7 @@ export function Flow({ className = '' }: FlowProps) {
         ctrlKey: true,
         metaKey: true,
         shiftKey: true,
-        callback: redo,
+        callback: handleRedo,
         preventDefault: true,
       },
     ],
@@ -305,7 +317,47 @@ export function Flow({ className = '' }: FlowProps) {
             color={gridColor}
             style={backgroundStyle}
           />
-          {/* <CustomControls onReset={resetFlow} /> */}
+          {/* Undo / Redo controls (history lives in useFlowHistory, per flow) */}
+          <Panel position="top-left" className="m-2">
+            <div className="flex items-center gap-1 rounded-md border border-border bg-node p-1 shadow-md">
+              <Tooltip delayDuration={300}>
+                <TooltipTrigger asChild>
+                  <span tabIndex={-1} className="inline-flex">
+                    <button
+                      type="button"
+                      onClick={handleUndo}
+                      disabled={!canUndo}
+                      aria-label="Undo last step"
+                      className="nodrag inline-flex h-8 w-8 items-center justify-center rounded text-primary transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                    >
+                      <Undo2 className="h-4 w-4" />
+                    </button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  {canUndo ? 'Undo last step (⌘Z)' : 'Nothing to undo'}
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip delayDuration={300}>
+                <TooltipTrigger asChild>
+                  <span tabIndex={-1} className="inline-flex">
+                    <button
+                      type="button"
+                      onClick={handleRedo}
+                      disabled={!canRedo}
+                      aria-label="Redo"
+                      className="nodrag inline-flex h-8 w-8 items-center justify-center rounded text-primary transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                    >
+                      <Redo2 className="h-4 w-4" />
+                    </button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  {canRedo ? 'Redo (⇧⌘Z)' : 'Nothing to redo'}
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          </Panel>
         </ReactFlow>
       </TooltipProvider>
     </div>

@@ -115,31 +115,31 @@ export function AgentOutputDialog({
           </div>
         </div>
       </DialogTrigger>
-      <DialogContent 
-        className="sm:max-w-[900px]" 
-        autoFocus={false} 
+      <DialogContent
+        className="flex flex-col w-[95vw] max-w-[1500px] h-[90vh]"
+        autoFocus={false}
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <DialogHeader>
-          <DialogTitle>{name}</DialogTitle>
+          <DialogTitle className="text-xl">{name}</DialogTitle>
         </DialogHeader>
-        
-        <div className="grid grid-cols-2 gap-6 pt-4" ref={initialFocusRef} tabIndex={-1}>
+
+        <div className="grid grid-cols-2 gap-6 pt-4 flex-1 min-h-0" ref={initialFocusRef} tabIndex={-1}>
           {/* Activity Log Section */}
-          <div>
+          <div className="flex flex-col min-h-0">
             <h3 className="font-medium mb-3 text-primary">Log</h3>
-            <div className="h-[400px] overflow-y-auto border border-border rounded-lg p-3">
+            <div className="flex-1 min-h-0 overflow-y-auto border border-border rounded-lg p-3">
               {messages.length > 0 ? (
                 <div className="p-3 space-y-3">
                   {messages
                     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()) // Sort newest first for log
                     .map((msg, idx) => (
                     <div key={idx} className="border-l-2 border-primary pl-3 text-sm">
-                      <div className="text-foreground">
-                        {msg.ticker && <span>[{msg.ticker}] </span>}
+                      <div className="text-foreground break-words">
+                        {msg.ticker && <span className="font-medium text-primary">[{msg.ticker}] </span>}
                         {msg.message}
                       </div>
-                      <div className="text-muted-foreground">
+                      <div className="text-xs text-muted-foreground mt-0.5">
                         {formatTimeFromTimestamp(msg.timestamp)}
                       </div>
                     </div>
@@ -154,7 +154,7 @@ export function AgentOutputDialog({
           </div>
           
           {/* Analysis Section */}
-          <div>
+          <div className="flex flex-col min-h-0">
             <div className="flex justify-between items-center mb-3">
               <h3 className="font-medium text-primary">Analysis</h3>
               <div className="flex items-center gap-2">
@@ -178,9 +178,9 @@ export function AgentOutputDialog({
                 )}
               </div>
             </div>
-            <div className="h-[400px] overflow-y-auto border border-border rounded-lg p-3">
+            <div className="flex-1 min-h-0 overflow-y-auto border border-border rounded-lg p-3">
               {tickersWithDecisions.length > 0 ? (
-                <div className="p-3 rounded-lg text-sm leading-relaxed">
+                <div className="p-3 rounded-lg text-[15px] leading-7">
                   {selectedTicker && (
                     <div className="mb-3 flex justify-between items-center">
                       <div className=" text-muted-foreground font-medium">Summary for {selectedTicker}</div>
@@ -203,15 +203,15 @@ export function AgentOutputDialog({
                       if (isJson) {
                         // Use react-syntax-highlighter for better JSON rendering
                         return (
-                          <div className="overflow-auto rounded-md text-xs">
+                          <div className="overflow-auto rounded-md">
                             <SyntaxHighlighter
                               language="json"
                               style={vscDarkPlus}
                               customStyle={{
                                 margin: 0,
-                                padding: '0.75rem',
-                                fontSize: '0.875rem',
-                                lineHeight: 1.5,
+                                padding: '1rem',
+                                fontSize: '0.9rem',
+                                lineHeight: 1.65,
                                 whiteSpace: 'pre-wrap',
                                 wordWrap: 'break-word',
                                 overflowWrap: 'break-word',
@@ -228,7 +228,7 @@ export function AgentOutputDialog({
                         // Display as regular text paragraphs
                         return (
                           (formattedContent as string[]).map((paragraph, idx) => (
-                            <p key={idx} className="mb-3 last:mb-0">{paragraph}</p>
+                            <p key={idx} className="mb-4 last:mb-0 whitespace-pre-wrap break-words text-foreground">{paragraph}</p>
                           ))
                         );
                       }
