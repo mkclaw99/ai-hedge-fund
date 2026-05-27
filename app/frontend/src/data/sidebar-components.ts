@@ -44,7 +44,7 @@ export const getComponentGroups = async (): Promise<ComponentGroup[]> => {
       items: [
         { name: "Portfolio Input", icon: ChartPie, description: "Defines the starting portfolio: initial cash, tickers, and the position limits agents trade within." },
         { name: "Stock Input", icon: ChartLine, description: "Supplies the stock ticker(s) and date range to analyze." },
-        { name: "Research Area", icon: FlaskConical, description: "Pick an investment theme (e.g. drone components); the system discovers its companies so the analysts can find the sensible investments. Add materials to ground it." },
+        { name: "Fundamental Research", icon: FlaskConical, description: "A researcher works an investment theme under your mandate: reads your materials + analyst's data, writes a research note, and extracts the relevant companies for the Analysts." },
       ]
     },
     {

@@ -121,6 +121,13 @@ def _validate(rows: list[dict], max_companies: int) -> dict:
     return {"picked": picked, "dropped": dropped}
 
 
+async def validate_companies(rows: list[dict], max_companies: int = 10) -> dict:
+    """Normalize + validate candidate companies (``[{name, ticker, ...}]``) into a
+    tradable universe. Shared by the rule-based discovery and the researcher engine.
+    Returns ``{picked, dropped}``. FD calls are blocking → run off the event loop."""
+    return await asyncio.to_thread(_validate, rows, max_companies)
+
+
 async def discover_universe(theme: str, *, max_companies: int = 10) -> dict:
     """Resolve a theme to a validated, tradable universe.
 

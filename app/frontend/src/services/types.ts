@@ -54,6 +54,7 @@ export interface HedgeFundRequest extends BaseHedgeFundRequest {
   // at run time; materials are user-provided grounding for the analysts.
   research_theme?: string;
   research_materials?: string;
+  research_mandate?: string; // the researcher's lens/method
   research_max_companies?: number;
   research_schedule?: string; // off | daily | weekly
 }

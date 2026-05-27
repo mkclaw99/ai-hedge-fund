@@ -35,6 +35,7 @@ export function ResearchAreaNode({
   isConnectable,
 }: NodeProps<ResearchAreaNode>) {
   const [theme, setTheme] = useNodeState(id, 'researchTheme', '');
+  const [mandate, setMandate] = useNodeState(id, 'researchMandate', '');
   const [materials, setMaterials] = useNodeState(id, 'researchMaterials', '');
   const [maxCompanies, setMaxCompanies] = useNodeState(id, 'researchMaxCompanies', '10');
   const [schedule, setSchedule] = useNodeState(id, 'researchSchedule', 'off');
@@ -120,6 +121,7 @@ export function ResearchAreaNode({
     runFlow({
       tickers: [], // resolved by the backend from the theme
       research_theme: theme,
+      research_mandate: mandate || undefined,
       research_materials: materials || undefined,
       research_max_companies: parseInt(maxCompanies, 10) || 10,
       research_schedule: schedule,
@@ -139,7 +141,7 @@ export function ResearchAreaNode({
         isConnectable={isConnectable}
         icon={<FlaskConical className="h-5 w-5" />}
         iconColor="text-amber-500"
-        name={data.name || 'Research Area'}
+        name={data.name || 'Fundamental Research'}
         description={data.description}
         hasLeftHandle={false}
         status={showAsProcessing ? 'IN_PROGRESS' : 'IDLE'}
@@ -185,6 +187,26 @@ export function ResearchAreaNode({
                     </Command>
                   </PopoverContent>
                 </Popover>
+              </div>
+
+              {/* Researcher mandate — the lens driving the research */}
+              <div className="flex flex-col gap-2">
+                <div className="text-subtitle text-primary flex items-center gap-1">
+                  <Tooltip delayDuration={200}>
+                    <TooltipTrigger asChild><span>Researcher mandate</span></TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs">
+                      The lens of the researcher driving this. It shapes which companies get
+                      extracted and how the research note is framed. e.g. "favor US-listed primes
+                      with real revenue; avoid pre-revenue SPACs and foreign listings."
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+                <textarea
+                  className="nodrag flex min-h-[52px] w-full rounded-md border border-border bg-node px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  placeholder="How should the researcher approach this? (focus, style, what to avoid)"
+                  value={mandate}
+                  onChange={(e) => setMandate(e.target.value)}
+                />
               </div>
 
               {/* Materials: notes + PDF information base */}
