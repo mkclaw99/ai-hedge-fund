@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 # override anything already set in the environment or sent per-request.
 load_dotenv()
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
@@ -14,12 +15,35 @@ from app.backend.routes import api_router
 from app.backend.database.connection import engine
 from app.backend.database.models import Base
 from app.backend.services.ollama_service import ollama_service
+from app.backend.services import research_scheduler
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="AI Hedge Fund API", description="Backend API for AI Hedge Fund", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """App lifecycle: check Ollama, then run the research-area refresh scheduler."""
+    await _check_ollama()
+    scheduler_task = None
+    if research_scheduler.is_enabled():
+        scheduler_task = asyncio.create_task(research_scheduler.scheduler_loop())
+    yield
+    if scheduler_task:
+        scheduler_task.cancel()
+        try:
+            await scheduler_task
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(
+    title="AI Hedge Fund API",
+    description="Backend API for AI Hedge Fund",
+    version="0.1.0",
+    lifespan=lifespan,
+)
 
 # Initialize database tables (this is safe to run multiple times)
 Base.metadata.create_all(bind=engine)
@@ -36,9 +60,8 @@ app.add_middleware(
 # Include all routes
 app.include_router(api_router)
 
-@app.on_event("startup")
-async def startup_event():
-    """Startup event to check Ollama availability."""
+async def _check_ollama():
+    """Check Ollama availability (logged at startup)."""
     try:
         logger.info("Checking Ollama availability...")
         status = await ollama_service.check_ollama_status()

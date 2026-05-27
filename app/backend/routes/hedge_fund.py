@@ -9,7 +9,8 @@ from app.backend.models.schemas import ErrorResponse, HedgeFundRequest, Backtest
 from app.backend.models.events import StartEvent, ProgressUpdateEvent, ErrorEvent, CompleteEvent
 from app.backend.services.graph import create_graph, parse_hedge_fund_response, run_graph_async
 from app.backend.services.portfolio import create_portfolio
-from app.backend.services.research_area import discover_universe
+from app.backend.services.run_executor import resolve_run
+from app.backend.services.research_scheduler import persist_research_run
 from app.backend.services.backtest_service import BacktestService
 from app.backend.services.api_key_service import ApiKeyService
 from src.utils.progress import progress
@@ -80,31 +81,28 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
                 # Send initial message
                 yield StartEvent().to_sse()
 
-                # Research area: resolve the theme into a tradable universe before
-                # running. Discovery delegates to the analyst MCP, then normalizes +
-                # validates tickers against Financial Datasets.
-                tickers = request_data.tickers
-                if request_data.research_theme and not tickers:
+                # Research area: resolve the theme into a tradable universe (analyst MCP +
+                # FD validation) and merge the PDF brief into the materials grounding.
+                if request_data.research_theme and not request_data.tickers:
                     yield ProgressUpdateEvent(
                         agent="research", ticker=None,
                         status=f"Discovering companies for '{request_data.research_theme}'…",
                         timestamp=None, analysis=None,
                     ).to_sse()
-                    disco = await discover_universe(
-                        request_data.research_theme,
-                        max_companies=request_data.research_max_companies or 10,
-                    )
-                    if disco.get("error") or not disco.get("tickers"):
-                        reason = disco.get("error") or "all candidates were foreign, delisted, or name-mismatched"
-                        yield ErrorEvent(message=f"No tradable companies for theme '{request_data.research_theme}': {reason}").to_sse()
-                        return
-                    tickers = disco["tickers"]
-                    request_data.tickers = tickers
+                resolved = await resolve_run(request_data, db)
+                if resolved["error"]:
+                    yield ErrorEvent(message=f"Research area: {resolved['error']}").to_sse()
+                    return
+                tickers = resolved["tickers"]
+                if resolved["discovery"]:
                     yield ProgressUpdateEvent(
                         agent="research", ticker=None,
                         status=f"Universe ({len(tickers)}): {', '.join(tickers)}",
-                        timestamp=None, analysis=json.dumps(disco),
+                        timestamp=None, analysis=json.dumps(resolved["discovery"]),
                     ).to_sse()
+
+                # Persist this run's config so the scheduler can replay it on a cadence.
+                persist_research_run(db, request_data)
 
                 # Create the portfolio for the resolved tickers
                 portfolio = create_portfolio(request_data.initial_cash, request_data.margin_requirement, tickers, request_data.portfolio_positions)
@@ -121,7 +119,7 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
                         model_provider=model_provider,
                         request=request_data,  # Pass the full request for agent-specific model access
                         flow_id=request_data.flow_id,  # Scope this run's research memory to its flow
-                        research_materials=request_data.research_materials,  # User grounding for all agents
+                        research_materials=resolved["materials"],  # notes + distilled PDF brief
                     )
                 )
 
