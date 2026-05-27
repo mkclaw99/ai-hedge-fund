@@ -245,6 +245,14 @@ def get_insider_trades(
     return all_trades
 
 
+# The FD news endpoint caps `limit` at 10 per request and offers no pagination
+# cursor, so we page backwards by date. Keep the page count bounded: the rate
+# limiter backs off 60s+ on a 429, so unbounded paging (e.g. limit=1000 -> 100
+# requests) can stall for a very long time and hammer the API.
+_NEWS_PAGE_SIZE = 10
+_NEWS_MAX_PAGES = int(os.environ.get("FD_NEWS_MAX_PAGES", "10"))
+
+
 def get_company_news(
     ticker: str,
     end_date: str,
@@ -252,10 +260,17 @@ def get_company_news(
     limit: int = 1000,
     api_key: str = None,
 ) -> list[CompanyNews]:
-    """Fetch company news from cache or API."""
+    """Fetch company news from cache or API.
+
+    Pages backwards from *end_date* in batches of 10 (the API maximum),
+    stopping at *limit* articles, *start_date*, or a bounded page count. When
+    many articles share a date the window is advanced past the oldest one to
+    guarantee progress, so this samples the most recent articles rather than
+    exhaustively returning every one.
+    """
     # Create a cache key that includes all parameters to ensure exact matches
     cache_key = f"{ticker}_{start_date or 'none'}_{end_date}_{limit}"
-    
+
     # Check cache first ("is not None" so a cached empty result is a hit).
     cached_data = _cache.get_company_news(cache_key)
     if cached_data is not None:
@@ -267,24 +282,26 @@ def get_company_news(
     if financial_api_key:
         headers["X-API-KEY"] = financial_api_key
 
-    all_news = []
+    page_size = min(limit, _NEWS_PAGE_SIZE)              # never exceed the API max (else HTTP 400)
+    max_pages = min(-(-limit // page_size), _NEWS_MAX_PAGES)  # ceil(limit/page_size), hard-capped
+
+    all_news: list[CompanyNews] = []
+    seen: set = set()
     current_end_date = end_date
     got_ok = False  # whether at least one request returned 200 (so empty == "no data", cacheable)
 
-    while True:
+    for _ in range(max_pages):
         url = f"https://api.financialdatasets.ai/news/?ticker={ticker}&end_date={current_end_date}"
         if start_date:
             url += f"&start_date={start_date}"
-        url += f"&limit={limit}"
+        url += f"&limit={page_size}"
 
         response = _make_api_request(url, headers)
         if response.status_code != 200:
             break
 
         try:
-            data = response.json()
-            response_model = CompanyNewsResponse(**data)
-            company_news = response_model.news
+            company_news = CompanyNewsResponse(**response.json()).news
         except Exception as e:
             logger.warning("Failed to parse company news response for %s: %s", ticker, e)
             break
@@ -293,18 +310,32 @@ def get_company_news(
         if not company_news:
             break
 
-        all_news.extend(company_news)
+        # Boundary dates overlap between pages — dedup while preserving order.
+        for news in company_news:
+            ident = news.url or (news.date, news.title)
+            if ident not in seen:
+                seen.add(ident)
+                all_news.append(news)
 
-        # Only continue pagination if we have a start_date and got a full page
-        if not start_date or len(company_news) < limit:
+        if len(all_news) >= limit:
+            break
+        if len(company_news) < page_size:
+            break  # no more data available
+
+        # Advance to the day BEFORE the oldest article so the window always
+        # shrinks — this guarantees progress even when 10+ articles share a date.
+        oldest = min(news.date for news in company_news)[:10]
+        try:
+            next_end = (datetime.date.fromisoformat(oldest) - datetime.timedelta(days=1)).isoformat()
+        except ValueError:
+            break
+        if next_end >= current_end_date:  # safety: no forward progress
+            break
+        current_end_date = next_end
+        if start_date and current_end_date < start_date:
             break
 
-        # Update end_date to the oldest date from current batch for next iteration
-        current_end_date = min(news.date for news in company_news).split("T")[0]
-
-        # If we've reached or passed the start_date, we can stop
-        if current_end_date <= start_date:
-            break
+    all_news = all_news[:limit]
 
     # Cache successful responses, including a legitimately empty result, so it
     # isn't re-fetched on every run. Don't cache when every request errored.
