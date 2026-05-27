@@ -133,6 +133,11 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     start_date: Optional[str] = None
     initial_cash: float = 100000.0
     flow_id: Optional[int] = None  # Scopes this run's research memory to its flow
+    # Research areas: a theme (analyst slug) is discovered into a tradable universe
+    # at run time; materials are user-provided grounding injected into the analysts.
+    research_theme: Optional[str] = None
+    research_materials: Optional[str] = None
+    research_max_companies: Optional[int] = 10
 
     def get_start_date(self) -> str:
         """Calculate start date if not provided"""

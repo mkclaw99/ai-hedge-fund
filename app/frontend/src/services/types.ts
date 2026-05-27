@@ -50,6 +50,11 @@ export interface HedgeFundRequest extends BaseHedgeFundRequest {
   start_date?: string;
   initial_cash?: number;
   flow_id?: number; // Scopes this run's research memory to its flow
+  // Research areas: a theme (analyst slug) is discovered into a tradable universe
+  // at run time; materials are user-provided grounding for the analysts.
+  research_theme?: string;
+  research_materials?: string;
+  research_max_companies?: number;
 }
 
 export interface BacktestRequest extends BaseHedgeFundRequest {
