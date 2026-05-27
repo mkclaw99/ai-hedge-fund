@@ -81,24 +81,31 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
                 # Send initial message
                 yield StartEvent().to_sse()
 
-                # Research area: resolve the theme into a tradable universe (analyst MCP +
-                # FD validation) and merge the PDF brief into the materials grounding.
+                # Fundamental research: the researcher reads the theme + materials under its
+                # mandate, writes a research note, and extracts the validated company universe.
                 if request_data.research_theme and not request_data.tickers:
                     yield ProgressUpdateEvent(
                         agent="research", ticker=None,
-                        status=f"Discovering companies for '{request_data.research_theme}'…",
+                        status=f"Researching '{request_data.research_theme}'…",
                         timestamp=None, analysis=None,
                     ).to_sse()
                 resolved = await resolve_run(request_data, db)
                 if resolved["error"]:
-                    yield ErrorEvent(message=f"Research area: {resolved['error']}").to_sse()
+                    yield ErrorEvent(message=f"Fundamental research: {resolved['error']}").to_sse()
                     return
                 tickers = resolved["tickers"]
                 if resolved["discovery"]:
+                    disco = resolved["discovery"]
+                    note = disco.get("research_note")
+                    if note:
+                        yield ProgressUpdateEvent(
+                            agent="research", ticker=None, status="Research note ready",
+                            timestamp=None, analysis=note[:6000],
+                        ).to_sse()
                     yield ProgressUpdateEvent(
                         agent="research", ticker=None,
                         status=f"Universe ({len(tickers)}): {', '.join(tickers)}",
-                        timestamp=None, analysis=json.dumps(resolved["discovery"]),
+                        timestamp=None, analysis=json.dumps(disco),
                     ).to_sse()
 
                 # Persist this run's config so the scheduler can replay it on a cadence.

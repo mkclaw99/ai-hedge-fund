@@ -105,6 +105,29 @@ def load_brief(flow_id: int | None) -> str:
         return ""
 
 
+def store_research_note(flow_id: int | None, note: str) -> None:
+    """Persist the researcher's latest fundamental research note for a flow."""
+    if flow_id is None or not note or not note.strip():
+        return
+    d = _materials_dir(flow_id)
+    if d is not None:
+        (d / "research_note.md").write_text(note.strip(), encoding="utf-8")
+
+
+def load_research_note(flow_id: int | None) -> str:
+    """Return the researcher's latest research note for a flow (or '')."""
+    if flow_id is None:
+        return ""
+    try:
+        d = _materials_dir(flow_id)
+        if d is None:
+            return ""
+        f = d / "research_note.md"
+        return f.read_text(encoding="utf-8") if f.exists() else ""
+    except Exception:
+        return ""
+
+
 def materials_status(flow_id: int | None) -> dict:
     """Lightweight status for the UI: whether a brief exists + the source filename."""
     if flow_id is None:
@@ -114,8 +137,11 @@ def materials_status(flow_id: int | None) -> dict:
         return {"has_brief": False}
     brief = d / "brief.md"
     name = d / "source_name.txt"
+    note = d / "research_note.md"
     return {
         "has_brief": brief.exists(),
         "filename": name.read_text(encoding="utf-8").strip() if name.exists() else None,
         "brief": brief.read_text(encoding="utf-8") if brief.exists() else None,
+        "has_research_note": note.exists(),
+        "research_note": note.read_text(encoding="utf-8") if note.exists() else None,
     }

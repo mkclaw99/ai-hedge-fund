@@ -9,22 +9,21 @@ thing headless for the scheduler.
 
 import logging
 
-from app.backend.services.analyst_mcp import is_enabled as analyst_enabled  # noqa: F401
 from app.backend.services.api_key_service import ApiKeyService
 from app.backend.services.graph import create_graph, run_graph_async
-from app.backend.services.materials import load_brief
+from app.backend.services.materials import load_brief, store_research_note
 from app.backend.services.portfolio import create_portfolio
-from app.backend.services.research_area import discover_universe
+from app.backend.services import researcher
 
 logger = logging.getLogger(__name__)
 
 _MAX_MATERIALS_CHARS = 8_000  # bound what gets injected into every agent prompt
 
 
-def merge_materials(notes: str | None, brief: str | None) -> str:
-    """Combine pasted notes + the distilled PDF brief into one bounded grounding string."""
-    parts = [p.strip() for p in (notes, brief) if p and p.strip()]
-    return "\n\n".join(parts)[:_MAX_MATERIALS_CHARS]
+def merge_materials(*parts: str | None) -> str:
+    """Combine grounding pieces (notes, PDF brief, research note) into one bounded string."""
+    kept = [p.strip() for p in parts if p and p.strip()]
+    return "\n\n".join(kept)[:_MAX_MATERIALS_CHARS]
 
 
 def _provider_str(request_data) -> str:
@@ -43,18 +42,31 @@ async def resolve_run(request_data, db) -> dict:
 
     tickers = request_data.tickers
     discovery = None
-    if request_data.research_theme and not tickers:
-        discovery = await discover_universe(
-            request_data.research_theme,
-            max_companies=request_data.research_max_companies or 10,
-        )
-        if discovery.get("error") or not discovery.get("tickers"):
-            reason = discovery.get("error") or "all candidates were foreign, delisted, or name-mismatched"
-            return {"tickers": [], "materials": "", "discovery": discovery, "error": reason}
-        tickers = discovery["tickers"]
-        request_data.tickers = tickers
+    pdf_brief = load_brief(request_data.flow_id)
+    research_note = ""
 
-    materials = merge_materials(request_data.research_materials, load_brief(request_data.flow_id))
+    if request_data.research_theme and not tickers:
+        # The fundamental researcher drives discovery: it reads the theme + materials
+        # (notes + PDF brief) under the researcher's mandate, writes a research note,
+        # and extracts the validated company universe.
+        research = await researcher.research(
+            request_data.research_theme,
+            materials=merge_materials(request_data.research_materials, pdf_brief),
+            mandate=request_data.research_mandate or "",
+            max_companies=request_data.research_max_companies or 10,
+            api_keys=request_data.api_keys,
+        )
+        if research.get("error") or not research.get("tickers"):
+            reason = research.get("error") or "all candidates were foreign, delisted, or name-mismatched"
+            return {"tickers": [], "materials": "", "discovery": research, "error": reason}
+        tickers = research["tickers"]
+        request_data.tickers = tickers
+        discovery = research
+        research_note = research.get("research_note") or ""
+        store_research_note(request_data.flow_id, research_note)
+
+    # Grounding injected into every agent: notes + PDF brief + the researcher's note.
+    materials = merge_materials(request_data.research_materials, pdf_brief, research_note)
     return {"tickers": tickers, "materials": materials, "discovery": discovery, "error": None}
 
 
