@@ -172,8 +172,10 @@ export function PortfolioStartNode({
     // Start DFS from the portfolio-analyzer-node
     dfs(id);
     
-    // Filter nodes to only include reachable ones
-    const agentNodes = allNodes.filter(node => reachableNodes.has(node.id));
+    // Filter nodes to only include reachable ones. Exclude the Memory node: it's a
+    // flow-scoped resource (read/written ambiently), not an executable graph node —
+    // sending it would make the backend's create_graph choke on an unknown node.
+    const agentNodes = allNodes.filter(node => reachableNodes.has(node.id) && node.type !== 'memory-node');
     
     // Filter edges to only include connections between reachable nodes (plus the portfolio-analyzer-node)
     const reachableNodeIds = new Set([id, ...reachableNodes]);

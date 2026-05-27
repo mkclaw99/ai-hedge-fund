@@ -5,6 +5,7 @@ import {
   Calculator,
   ChartLine,
   ChartPie,
+  Database,
   LucideIcon,
   Network,
   Play,
@@ -73,6 +74,15 @@ export const getComponentGroups = async (): Promise<ComponentGroup[]> => {
       description: "Terminal nodes that consume the analysts' signals to produce a decision.",
       items: [
         { name: "Portfolio Manager", icon: Brain, description: "Aggregates every analyst's signal and makes the final buy / sell / hold decisions and position sizes." },
+      ]
+    },
+    {
+      name: "Resources",
+      icon: Database,
+      iconColor: "text-purple-500",
+      description: "Flow-scoped facilities the agents draw on. Drop one in to see and manage it.",
+      items: [
+        { name: "Memory", icon: Database, description: "This flow's research memory. It accumulates each run; analysts read back their own prior calls and the Portfolio Manager reads everything." },
       ]
     },
   ];

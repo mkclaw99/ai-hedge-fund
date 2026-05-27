@@ -49,6 +49,7 @@ export interface HedgeFundRequest extends BaseHedgeFundRequest {
   end_date?: string;
   start_date?: string;
   initial_cash?: number;
+  flow_id?: number; // Scopes this run's research memory to its flow
 }
 
 export interface BacktestRequest extends BaseHedgeFundRequest {
