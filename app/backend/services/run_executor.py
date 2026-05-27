@@ -17,7 +17,12 @@ from app.backend.services import researcher
 
 logger = logging.getLogger(__name__)
 
-_MAX_MATERIALS_CHARS = 8_000  # bound what gets injected into every agent prompt
+# High safety ceiling on what gets injected into EVERY agent prompt. This is the one
+# materials cap that's multiplied across the agent fan-out (~15 analysts × every ticker),
+# so it's not removed outright — but it's large enough to be effectively no limit for a
+# real document (a full distilled brief + notes), only guarding against a pathological
+# multi-MB injection that would blow the agents' context window and break the run.
+_MAX_MATERIALS_CHARS = 100_000
 
 
 def merge_materials(*parts: str | None) -> str:

@@ -21,11 +21,20 @@ logger = logging.getLogger(__name__)
 _MODEL = "gemini-3.1-pro-preview"
 _PROVIDER = "Google"
 
-_RESEARCH_PROMPT = """You are a fundamental equity researcher. Write a concise fundamental research
-note (~350-550 words) on the investment theme below — the understanding a team needs BEFORE
-picking stocks. Cover: the thesis, the structure / value chain of the area, demand drivers and
-catalysts, the key risks, and what separates winners from losers. Let the researcher's mandate
-shape the emphasis. Do NOT recommend specific tickers to buy — a separate step selects companies.
+# Generous caps on what each researcher prompt carries. Each researcher is a single
+# Gemini call (not the per-agent fan-out), so these are sized to comfortably hold a
+# long brief + notes rather than to save tokens — effectively no limit for real
+# documents, with a ceiling only to guard against pathological inputs.
+_MAX_MATERIALS_CHARS = 60_000
+_MAX_NOTE_CHARS = 60_000
+_MAX_MANDATE_CHARS = 6_000
+
+_RESEARCH_PROMPT = """You are a fundamental equity researcher. Write a thorough fundamental research
+note on the investment theme below — the understanding a team needs BEFORE picking stocks. Cover:
+the thesis, the structure / value chain of the area, demand drivers and catalysts, the key risks,
+and what separates winners from losers. Be complete and specific; don't pad, but don't impose an
+artificial length limit. Let the researcher's mandate shape the emphasis. Do NOT recommend specific
+tickers to buy — a separate step selects companies.
 
 Theme: {theme}
 
@@ -85,8 +94,8 @@ async def fundamental_research(theme: str, *, materials: str = "", mandate: str 
             return ""
         prompt = _RESEARCH_PROMPT.format(
             theme=theme,
-            mandate=(mandate or "(none specified — use sound general fundamentals)").strip()[:1500],
-            materials=(materials or "(none)").strip()[:6000],
+            mandate=(mandate or "(none specified — use sound general fundamentals)").strip()[:_MAX_MANDATE_CHARS],
+            materials=(materials or "(none)").strip()[:_MAX_MATERIALS_CHARS],
             research="\n".join(f"- {r.get('title')}" for r in research_items[:15]) or "(none on file)",
         )
         return (getattr(model.invoke(prompt), "content", "") or "").strip()
@@ -111,9 +120,9 @@ async def extract_companies(theme: str, *, research_note: str = "", materials: s
             raise RuntimeError("extraction model unavailable")
         prompt = _EXTRACT_PROMPT.format(
             theme=theme,
-            mandate=(mandate or "(none — pick the most theme-relevant, liquid public names)").strip()[:1500],
-            note=(research_note or "(no research note provided)").strip()[:6000],
-            materials=(materials or "(none)").strip()[:3000],
+            mandate=(mandate or "(none — pick the most theme-relevant, liquid public names)").strip()[:_MAX_MANDATE_CHARS],
+            note=(research_note or "(no research note provided)").strip()[:_MAX_NOTE_CHARS],
+            materials=(materials or "(none)").strip()[:_MAX_MATERIALS_CHARS],
             candidates=_fmt_candidates(candidates),
             max=max_companies,
         )
