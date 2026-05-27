@@ -5,6 +5,7 @@ import { InvestmentReportNode } from './components/investment-report-node';
 import { JsonOutputNode } from './components/json-output-node';
 import { MemoryNode } from './components/memory-node';
 import { ResearchAreaNode } from './components/research-area-node';
+import { ResearchCompaniesNode } from './components/research-companies-node';
 import { PortfolioManagerNode } from './components/portfolio-manager-node';
 import { PortfolioStartNode } from './components/portfolio-start-node';
 import { StockAnalyzerNode } from './components/stock-analyzer-node';
@@ -57,6 +58,7 @@ export const nodeTypes = {
   'json-output-node': JsonOutputNode,
   'memory-node': MemoryNode,
   'research-area-node': ResearchAreaNode,
+  'research-companies-node': ResearchCompaniesNode,
   'portfolio-start-node': PortfolioStartNode,
   'portfolio-manager-node': PortfolioManagerNode,
   'stock-analyzer-node': StockAnalyzerNode,

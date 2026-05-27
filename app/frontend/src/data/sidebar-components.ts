@@ -7,6 +7,7 @@ import {
   ChartPie,
   Database,
   FlaskConical,
+  ListChecks,
   LucideIcon,
   Network,
   Play,
@@ -44,7 +45,16 @@ export const getComponentGroups = async (): Promise<ComponentGroup[]> => {
       items: [
         { name: "Portfolio Input", icon: ChartPie, description: "Defines the starting portfolio: initial cash, tickers, and the position limits agents trade within." },
         { name: "Stock Input", icon: ChartLine, description: "Supplies the stock ticker(s) and date range to analyze." },
-        { name: "Fundamental Research", icon: FlaskConical, description: "A researcher works an investment theme under your mandate: reads your materials + analyst's data, writes a research note, and extracts the relevant companies for the Analysts." },
+      ]
+    },
+    {
+      name: "Research",
+      icon: FlaskConical,
+      iconColor: "text-amber-500",
+      description: "Two chained researcher roles that turn an investment theme into a company universe for the Analysts.",
+      items: [
+        { name: "Fundamental Research", icon: FlaskConical, description: "Topic researcher: under your mandate, reads your materials + analyst's data and writes a fundamental research note. Connect it to a Fundamental Companies node." },
+        { name: "Fundamental Companies", icon: ListChecks, description: "Company researcher: extracts the relevant, tradable companies from the Fundamental Research note and hands them to the Analysts." },
       ]
     },
     {

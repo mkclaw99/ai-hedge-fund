@@ -17,7 +17,7 @@ import { useFlowContext } from '@/contexts/flow-context';
 import { useLayoutContext } from '@/contexts/layout-context';
 import { useNodeContext } from '@/contexts/node-context';
 import { useFlowConnection } from '@/hooks/use-flow-connection';
-import { useNodeState } from '@/hooks/use-node-state';
+import { getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
 import { getMaterials, getThemes, MaterialsStatus, ResearchTheme, uploadMaterials } from '@/services/research-api';
 import { type ResearchAreaNode } from '../types';
 import { NodeShell } from './node-shell';
@@ -37,8 +37,8 @@ export function ResearchAreaNode({
   const [theme, setTheme] = useNodeState(id, 'researchTheme', '');
   const [mandate, setMandate] = useNodeState(id, 'researchMandate', '');
   const [materials, setMaterials] = useNodeState(id, 'researchMaterials', '');
-  const [maxCompanies, setMaxCompanies] = useNodeState(id, 'researchMaxCompanies', '10');
   const [schedule, setSchedule] = useNodeState(id, 'researchSchedule', 'off');
+  const [runError, setRunError] = useState<string | null>(null);
   const [themes, setThemes] = useState<ResearchTheme[]>([]);
   const [open, setOpen] = useState(false);
   const [schedOpen, setSchedOpen] = useState(false);
@@ -100,9 +100,23 @@ export function ResearchAreaNode({
     };
     dfs(id);
 
+    // The Fundamental Companies node extracts the universe — it's required.
+    const fcNode = allNodes.find((n) => reachable.has(n.id) && n.type === 'research-companies-node');
+    if (!fcNode) {
+      setRunError('Connect a Fundamental Companies node: Fundamental Research → Fundamental Companies → Analysts.');
+      return;
+    }
+    setRunError(null);
+    const fcState = getNodeInternalState(fcNode.id) || {};
+    const companyMandate = (fcState.mandate as string) || '';
+    const companyMax = parseInt(fcState.maxCompanies as string, 10) || 10;
+
     // Resource/input nodes don't execute in the backend graph.
     const agentNodes = allNodes.filter(
-      (node) => reachable.has(node.id) && node.type !== 'memory-node' && node.type !== 'research-area-node',
+      (node) => reachable.has(node.id)
+        && node.type !== 'memory-node'
+        && node.type !== 'research-area-node'
+        && node.type !== 'research-companies-node',
     );
     const reachableIds = new Set([id, ...reachable]);
     const validEdges = allEdges.filter(
@@ -122,8 +136,9 @@ export function ResearchAreaNode({
       tickers: [], // resolved by the backend from the theme
       research_theme: theme,
       research_mandate: mandate || undefined,
+      research_company_mandate: companyMandate || undefined,
       research_materials: materials || undefined,
-      research_max_companies: parseInt(maxCompanies, 10) || 10,
+      research_max_companies: companyMax,
       research_schedule: schedule,
       graph_nodes: agentNodes.map((node) => ({ id: node.id, type: node.type, data: node.data, position: node.position })),
       graph_edges: validEdges,
@@ -294,31 +309,10 @@ export function ResearchAreaNode({
                 </Popover>
               </div>
 
-              {/* Max companies + Run */}
+              {/* Run — requires a downstream Fundamental Companies node */}
               <div className="flex flex-col gap-2">
-                <div className="text-subtitle text-primary flex items-center gap-1">
-                  <Tooltip delayDuration={200}>
-                    <TooltipTrigger asChild><span>Max companies to analyze</span></TooltipTrigger>
-                    <TooltipContent side="right" className="max-w-xs">
-                      How many of the theme's discovered companies to run through the analysts,
-                      ranked by theme exposure. Higher = broader coverage, but slower and more
-                      data/LLM usage.
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
+                <div className="text-subtitle text-primary">Run</div>
                 <div className="flex gap-2 items-center">
-                  <Tooltip delayDuration={200}>
-                    <TooltipTrigger asChild>
-                      <input
-                        type="number" min={1} max={25}
-                        aria-label="Max companies to analyze"
-                        className="nodrag h-10 w-16 rounded-md border border-border bg-node px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                        value={maxCompanies}
-                        onChange={(e) => setMaxCompanies(e.target.value.replace(/[^0-9]/g, ''))}
-                      />
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">Number of companies (1–25)</TooltipContent>
-                  </Tooltip>
                   <Tooltip delayDuration={200}>
                     <TooltipTrigger asChild>
                       <span tabIndex={0} className="inline-flex">
@@ -333,15 +327,16 @@ export function ResearchAreaNode({
                         </Button>
                       </span>
                     </TooltipTrigger>
-                    <TooltipContent side="bottom">
+                    <TooltipContent side="bottom" className="max-w-xs">
                       {showAsProcessing
                         ? 'Stop the run'
                         : canRunResearch
-                          ? "Discover the theme's companies and run the analysis"
+                          ? 'Researches the topic, then the connected Fundamental Companies node extracts the universe and the Analysts run.'
                           : 'Select a theme first'}
                     </TooltipContent>
                   </Tooltip>
                 </div>
+                {runError && <span className="text-xs text-red-500">{runError}</span>}
               </div>
             </div>
           </div>

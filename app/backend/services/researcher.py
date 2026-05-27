@@ -1,11 +1,14 @@
-"""Fundamental researcher — the research role that drives a Fundamental Research area.
+"""The two research roles behind a Fundamental Research flow, both Gemini-driven.
 
-Given a theme + the user's materials + a researcher *mandate*, it reads analyst's data
-(value-chain companies + research corpus — pure-DB reads via the MCP bridge), then uses
-Gemini to (1) write a fundamental research note (the *understanding*) and (2) extract/rank
-the relevant companies (the *universe*). Proposed tickers are validated against Financial
-Datasets (reusing research_area's guards). Fail-open: on any failure it falls back to the
-rule-based discovery so a run never breaks.
+1. ``fundamental_research`` — the topic researcher. Reads the theme + materials +
+   analyst's research corpus under a *research mandate* and writes a fundamental
+   research note (the understanding). It does NOT pick companies.
+2. ``extract_companies`` — the company researcher. Reads that note + the analyst
+   value chain under an *extraction mandate* and extracts/ranks the relevant public
+   companies, validated against Financial Datasets.
+
+Both fail open: the note falls back to "" and extraction falls back to the
+rule-based value-chain discovery if Gemini returns nothing usable.
 """
 
 import logging
@@ -18,51 +21,86 @@ logger = logging.getLogger(__name__)
 _MODEL = "gemini-3.1-pro-preview"
 _PROVIDER = "Google"
 
-_PROMPT = """You are a fundamental equity researcher building an investable universe for a theme.
+_RESEARCH_PROMPT = """You are a fundamental equity researcher. Write a concise fundamental research
+note (~350-550 words) on the investment theme below — the understanding a team needs BEFORE
+picking stocks. Cover: the thesis, the structure / value chain of the area, demand drivers and
+catalysts, the key risks, and what separates winners from losers. Let the researcher's mandate
+shape the emphasis. Do NOT recommend specific tickers to buy — a separate step selects companies.
 
 Theme: {theme}
 
-Researcher mandate (your lens — let it shape which companies you pick and what you emphasize):
+Researcher mandate (the lens driving this research):
 {mandate}
 
 Background materials provided by the user (weigh as context):
 {materials}
 
-Candidate companies from the analyst value chain (name · ticker · theme-exposure% · role):
-{candidates}
-
 Recent research on this theme (titles):
 {research}
 
-Produce STRICT JSON only, no prose outside it:
-{{
-  "research_note": "~300-500 word fundamental note: thesis, value chain, key public players, catalysts, risks — shaped by the mandate",
-  "companies": [{{"name": "Company", "ticker": "TICKER", "rationale": "<=120 chars why it fits the theme+mandate"}}]
-}}
+Write the note in markdown, no preamble."""
 
-Rules: pick the 10-20 most relevant PUBLIC companies for the theme + mandate. Prefer the
-candidate tickers but fix obvious ticker errors and you may add clearly-relevant public
-companies you know. Use real US-listed tickers where possible. Do NOT invent tickers. JSON only."""
+_EXTRACT_PROMPT = """You are a company-selection researcher. From the fundamental research note and
+the candidate value chain below, extract the most relevant PUBLIC companies to invest in for this
+theme, shaped by the extraction mandate.
+
+Theme: {theme}
+
+Extraction mandate (how to choose companies):
+{mandate}
+
+Fundamental research note (the understanding to build on):
+{note}
+
+Background materials:
+{materials}
+
+Candidate companies from the analyst value chain (name · ticker · exposure% · role):
+{candidates}
+
+Return STRICT JSON only, no prose outside it:
+{{ "companies": [{{"name": "Company", "ticker": "TICKER", "rationale": "<=120 chars why it fits"}}] }}
+
+Pick the ~{max} most relevant public companies. Prefer the candidate tickers, fix obvious ticker
+errors, and you may add clearly-relevant public companies you know. Use real US-listed tickers
+where possible. Do NOT invent tickers. JSON only."""
 
 
 def _fmt_candidates(rows: list[dict]) -> str:
-    out = [
+    return "\n".join(
         f"- {c.get('name')} · {c.get('ticker')} · {c.get('theme_exposure_pct')}% · {c.get('role')}"
         for c in rows[:80]
-    ]
-    return "\n".join(out) or "(none available)"
+    ) or "(none available)"
 
 
-async def research(theme: str, *, materials: str = "", mandate: str = "", max_companies: int = 10, api_keys: dict | None = None) -> dict:
-    """Run the fundamental researcher. Returns
-    ``{theme, tickers, picked, dropped, research_note, error}``."""
-    # 1. analyst pure-DB inputs (fail-open)
-    cos = await analyst_mcp.list_theme_companies(theme, limit=120)
-    candidates = [c for c in cos.get("items", []) if c.get("is_public")] if not cos.get("error") else []
+async def fundamental_research(theme: str, *, materials: str = "", mandate: str = "", api_keys: dict | None = None) -> str:
+    """The topic researcher: write a fundamental research note (markdown) or '' on failure."""
     sr = await analyst_mcp.call_analyst_tool("search_research", {"theme": theme, "since_days": 365, "limit": 15})
     research_items = sr.get("items", []) if not sr.get("error") else []
+    try:
+        from src.llm.models import get_model
 
-    # 2. Gemini synthesis → {research_note, companies}
+        model = get_model(_MODEL, _PROVIDER, api_keys)
+        if model is None:
+            return ""
+        prompt = _RESEARCH_PROMPT.format(
+            theme=theme,
+            mandate=(mandate or "(none specified — use sound general fundamentals)").strip()[:1500],
+            materials=(materials or "(none)").strip()[:6000],
+            research="\n".join(f"- {r.get('title')}" for r in research_items[:15]) or "(none on file)",
+        )
+        return (getattr(model.invoke(prompt), "content", "") or "").strip()
+    except Exception as e:
+        logger.warning("fundamental_research failed: %s", e)
+        return ""
+
+
+async def extract_companies(theme: str, *, research_note: str = "", materials: str = "", mandate: str = "", max_companies: int = 10, api_keys: dict | None = None) -> dict:
+    """The company researcher: extract a validated universe. Returns
+    ``{theme, tickers, picked, dropped, error}``; falls back to rule-based discovery."""
+    cos = await analyst_mcp.list_theme_companies(theme, limit=120)
+    candidates = [c for c in cos.get("items", []) if c.get("is_public")] if not cos.get("error") else []
+
     parsed = None
     try:
         from src.llm.models import get_model
@@ -70,43 +108,35 @@ async def research(theme: str, *, materials: str = "", mandate: str = "", max_co
 
         model = get_model(_MODEL, _PROVIDER, api_keys)
         if model is None:
-            raise RuntimeError("research model unavailable")
-        prompt = _PROMPT.format(
+            raise RuntimeError("extraction model unavailable")
+        prompt = _EXTRACT_PROMPT.format(
             theme=theme,
-            mandate=(mandate or "(none specified — use sound general fundamentals)").strip()[:1500],
-            materials=(materials or "(none)").strip()[:6000],
+            mandate=(mandate or "(none — pick the most theme-relevant, liquid public names)").strip()[:1500],
+            note=(research_note or "(no research note provided)").strip()[:6000],
+            materials=(materials or "(none)").strip()[:3000],
             candidates=_fmt_candidates(candidates),
-            research="\n".join(f"- {r.get('title')}" for r in research_items[:15]) or "(none on file)",
+            max=max_companies,
         )
-        content = getattr(model.invoke(prompt), "content", "") or ""
-        parsed = extract_json_from_response(content)
+        parsed = extract_json_from_response(getattr(model.invoke(prompt), "content", "") or "")
     except Exception as e:
-        logger.warning("researcher synthesis failed: %s", e)
+        logger.warning("extract_companies synthesis failed: %s", e)
 
-    # 3. Fall back to rule-based discovery if the researcher produced nothing usable.
     if not parsed or not isinstance(parsed, dict) or not parsed.get("companies"):
-        logger.info("researcher falling back to rule-based discovery for theme '%s'", theme)
-        d = await discover_universe(theme, max_companies=max_companies)
-        d["research_note"] = (parsed or {}).get("research_note", "") if isinstance(parsed, dict) else ""
-        return d
+        logger.info("extract_companies falling back to rule-based discovery for '%s'", theme)
+        return await discover_universe(theme, max_companies=max_companies)
 
-    note = (parsed.get("research_note") or "").strip()
     rows = [
         {"name": c.get("name") or "", "ticker": c.get("ticker"), "rationale": c.get("rationale")}
         for c in parsed["companies"] if isinstance(c, dict) and c.get("ticker")
     ]
     val = await validate_companies(rows, max_companies)
-
-    # Carry each company's rationale onto the validated picks (matched by name).
     rationale_by_name = {r["name"]: r.get("rationale") for r in rows}
     for p in val["picked"]:
         p["rationale"] = rationale_by_name.get(p.get("name"))
-
     return {
         "theme": theme,
         "tickers": [p["ticker"] for p in val["picked"]],
         "picked": val["picked"],
         "dropped": val["dropped"],
-        "research_note": note,
         "error": None,
     }

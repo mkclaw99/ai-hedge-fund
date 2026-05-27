@@ -96,7 +96,19 @@ const baseNodeTypeDefinitions: Record<string, NodeTypeDefinition> = {
       position,
       data: {
         name: "Fundamental Research",
-        description: "A researcher works an investment theme: under your mandate it reads your materials + analyst's data, writes a research note, and extracts the relevant companies for the Analysts to evaluate.",
+        description: "The topic researcher: under your mandate it reads your materials + analyst's data and writes a fundamental research note. Connect it to a Fundamental Companies node.",
+        status: "Idle",
+      },
+    }),
+  },
+  "Fundamental Companies": {
+    createNode: (position: { x: number, y: number }): AppNode => ({
+      id: `research-companies-node_${generateUniqueIdSuffix()}`,
+      type: "research-companies-node",
+      position,
+      data: {
+        name: "Fundamental Companies",
+        description: "The company researcher: extracts the relevant, tradable companies from the upstream Fundamental Research note and hands them to the Analysts. Place it between Fundamental Research and the Analysts.",
         status: "Idle",
       },
     }),
