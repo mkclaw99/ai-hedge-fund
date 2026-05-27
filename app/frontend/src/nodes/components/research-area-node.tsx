@@ -160,8 +160,10 @@ export function ResearchAreaNode({
         isConnectable={isConnectable}
         icon={<FlaskConical className="h-5 w-5" />}
         iconColor="text-amber-500"
-        name={data.name || 'Fundamental Research'}
-        description={data.description}
+        // Always show the canonical name/description for this system node, so flows saved
+        // before the "Research Area" → "Fundamental Research" rename display the current text.
+        name="Fundamental Research"
+        description="The topic researcher: under your mandate it reads your materials + analyst's data and writes a fundamental research note. Connect it to a Fundamental Companies node."
         hasLeftHandle={false}
         status={showAsProcessing ? 'IN_PROGRESS' : 'IDLE'}
         width="w-80"
