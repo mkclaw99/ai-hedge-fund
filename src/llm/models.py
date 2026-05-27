@@ -8,10 +8,31 @@ from langchain_xai import ChatXAI
 from langchain_openai import ChatOpenAI, AzureChatOpenAI
 from langchain_gigachat import GigaChat
 from langchain_ollama import ChatOllama
+from langchain_core.rate_limiters import InMemoryRateLimiter
 from enum import Enum
 from pydantic import BaseModel
 from typing import Tuple, List
 from pathlib import Path
+
+
+def _gemini_rps() -> float:
+    """Gemini client-side request rate (req/sec). Tune with GEMINI_REQUESTS_PER_SECOND."""
+    try:
+        return max(0.02, float(os.getenv("GEMINI_REQUESTS_PER_SECOND", "0.5")))
+    except (TypeError, ValueError):
+        return 0.5
+
+
+# Shared, process-wide rate limiter for Gemini/Google calls. Spaces requests so the
+# many concurrent agents (analysts × tickers + researchers + distiller) don't burst
+# past the API quota and hit 429s. Default ~0.5 req/s (~30/min), max_bucket_size=1 so
+# calls are strictly spaced (no bursts). Lower GEMINI_REQUESTS_PER_SECOND if you still
+# see 429s on a smaller tier; raise it on a larger one. The 429 retry is a backstop.
+_GEMINI_RATE_LIMITER = InMemoryRateLimiter(
+    requests_per_second=_gemini_rps(),
+    check_every_n_seconds=0.1,
+    max_bucket_size=1,
+)
 
 
 class ModelProvider(str, Enum):
@@ -173,7 +194,7 @@ def get_model(model_name: str, model_provider: ModelProvider, api_keys: dict = N
         if not api_key:
             print(f"API Key Error: Please make sure GOOGLE_API_KEY is set in your .env file or provided via API keys.")
             raise ValueError("Google API key not found.  Please make sure GOOGLE_API_KEY is set in your .env file or provided via API keys.")
-        return ChatGoogleGenerativeAI(model=model_name, api_key=api_key)
+        return ChatGoogleGenerativeAI(model=model_name, api_key=api_key, rate_limiter=_GEMINI_RATE_LIMITER)
     elif model_provider == ModelProvider.OLLAMA:
         # For Ollama, we use a base URL instead of an API key
         # Check if OLLAMA_HOST is set (for Docker on macOS)
