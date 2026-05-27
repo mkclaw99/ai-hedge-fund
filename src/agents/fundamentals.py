@@ -1,5 +1,6 @@
 from langchain_core.messages import HumanMessage
 from src.graph.state import AgentState, show_agent_reasoning
+from src.utils.analyst_report import write_analyst_report
 from src.utils.api_key import get_api_key_from_state
 from src.utils.progress import progress
 import json
@@ -140,7 +141,9 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
             "reasoning": reasoning,
         }
 
-        progress.update_status(agent_id, ticker, "Done", analysis=json.dumps(reasoning, indent=4))
+        progress.update_status(agent_id, ticker, "Done", analysis=write_analyst_report(
+            agent_id, "Fundamentals Analyst", ticker, overall_signal, confidence, reasoning, state,
+        ))
 
     # Create the fundamental analysis message
     message = HumanMessage(
