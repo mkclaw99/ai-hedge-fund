@@ -5,7 +5,7 @@ import { clearAllNodeStates, getAllNodeStates, setNodeInternalState, setCurrentF
 import { flowService } from '@/services/flow-service';
 import { Flow } from '@/types/flow';
 import { MarkerType, ReactFlowInstance, useReactFlow, XYPosition } from '@xyflow/react';
-import { createContext, ReactNode, useCallback, useContext, useState } from 'react';
+import { createContext, ReactNode, useCallback, useContext, useRef, useState } from 'react';
 
 interface FlowContextType {
   addComponentToFlow: (componentName: string) => Promise<void>;
@@ -37,6 +37,15 @@ export function FlowProvider({ children }: FlowProviderProps) {
   const [currentFlowId, setCurrentFlowId] = useState<number | null>(null);
   const [currentFlowName, setCurrentFlowName] = useState('Untitled Flow');
   const [isUnsaved, setIsUnsaved] = useState(false);
+  // The flow id we last applied a viewport for. loadFlow re-runs whenever its tab's
+  // effect re-fires (tab switch, flow-prop change); we only (re)apply the saved
+  // viewport when actually switching to a *different* flow, so re-loading the flow
+  // you're already on never clobbers the zoom/pan you set by hand.
+  const lastViewportFlowIdRef = useRef<number | null>(null);
+  // Per-flow remembered viewport (this session): when you leave a flow we stash its
+  // current zoom/pan and restore that on return, so a tab switch never snaps you back
+  // to a stale saved viewport.
+  const viewportMemoryRef = useRef<Record<number, { x: number; y: number; zoom: number }>>({});
 
   // Calculate viewport center position with optional randomness
   const getViewportPosition = useCallback((addRandomness = false): XYPosition => {
@@ -133,6 +142,12 @@ export function FlowProvider({ children }: FlowProviderProps) {
   // Load a flow
   const loadFlow = useCallback(async (flow: Flow) => {
     try {
+      // Remember the view of the flow we're leaving so returning restores its zoom/pan.
+      const leavingId = lastViewportFlowIdRef.current;
+      if (leavingId != null && leavingId !== flow.id) {
+        try { viewportMemoryRef.current[leavingId] = reactFlowInstance.getViewport(); } catch { /* ignore */ }
+      }
+
       // CRITICAL: Set the current flow ID FIRST, before rendering nodes
       // This ensures useNodeState hooks initialize with the correct flow ID
       setNodeStateFlowId(flow.id.toString());
@@ -158,32 +173,42 @@ export function FlowProvider({ children }: FlowProviderProps) {
       reactFlowInstance.setNodes(flow.nodes || []);
       reactFlowInstance.setEdges(flow.edges || []);
       
-      // Restore the user's saved view so their zoom/pan persists across opens.
-      // Only fall back to fit-to-view when there's no saved viewport, or the saved
-      // one would leave every node off-screen (the case that made the Memory node
-      // un-findable). This keeps zoom stable while never stranding the user.
-      const fitView = () => reactFlowInstance.fitView({ padding: 0.15, duration: 300 });
-      if (flow.viewport) {
-        reactFlowInstance.setViewport(flow.viewport);
-        setTimeout(() => {
-          const nodes = reactFlowInstance.getNodes();
-          if (!nodes.length) return;
-          const { x, y, zoom } = reactFlowInstance.getViewport();
-          const el = document.querySelector('.react-flow') as HTMLElement | null;
-          const w = el?.clientWidth ?? window.innerWidth;
-          const h = el?.clientHeight ?? window.innerHeight;
-          const vx0 = -x / zoom, vy0 = -y / zoom, vx1 = (-x + w) / zoom, vy1 = (-y + h) / zoom;
-          const anyVisible = nodes.some((n) => {
-            const nx = n.position?.x ?? 0;
-            const ny = n.position?.y ?? 0;
-            const nw = (n as any).measured?.width ?? (n as any).width ?? 200;
-            const nh = (n as any).measured?.height ?? (n as any).height ?? 100;
-            return nx + nw >= vx0 && nx <= vx1 && ny + nh >= vy0 && ny <= vy1;
-          });
-          if (!anyVisible) fitView();
-        }, 200);
-      } else {
-        setTimeout(fitView, 120);
+      // Only (re)apply a viewport when switching to a *different* flow. Re-loading the
+      // flow you're already on (tab re-render, periodic refetch) must NOT reset the
+      // zoom/pan you set by hand.
+      if (lastViewportFlowIdRef.current !== flow.id) {
+        lastViewportFlowIdRef.current = flow.id;
+
+        // Prefer the view you last left this flow at (this session); else its saved
+        // viewport; else fit. Only fall back to fit-to-view when the chosen viewport
+        // would leave every node off-screen (what made the Memory node un-findable;
+        // memory is also reachable via the bottom-panel Memory tab regardless).
+        const fitView = () => reactFlowInstance.fitView({ padding: 0.15, duration: 300 });
+        const remembered = viewportMemoryRef.current[flow.id];
+        if (remembered) {
+          reactFlowInstance.setViewport(remembered);
+        } else if (flow.viewport) {
+          reactFlowInstance.setViewport(flow.viewport);
+          setTimeout(() => {
+            const nodes = reactFlowInstance.getNodes();
+            if (!nodes.length) return;
+            const { x, y, zoom } = reactFlowInstance.getViewport();
+            const el = document.querySelector('.react-flow') as HTMLElement | null;
+            const w = el?.clientWidth ?? window.innerWidth;
+            const h = el?.clientHeight ?? window.innerHeight;
+            const vx0 = -x / zoom, vy0 = -y / zoom, vx1 = (-x + w) / zoom, vy1 = (-y + h) / zoom;
+            const anyVisible = nodes.some((n) => {
+              const nx = n.position?.x ?? 0;
+              const ny = n.position?.y ?? 0;
+              const nw = (n as any).measured?.width ?? (n as any).width ?? 200;
+              const nh = (n as any).measured?.height ?? (n as any).height ?? 100;
+              return nx + nw >= vx0 && nx <= vx1 && ny + nh >= vy0 && ny <= vy1;
+            });
+            if (!anyVisible) fitView();
+          }, 200);
+        } else {
+          setTimeout(fitView, 120);
+        }
       }
 
       setIsUnsaved(false);
