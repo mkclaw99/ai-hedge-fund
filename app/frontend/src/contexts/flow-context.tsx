@@ -158,12 +158,33 @@ export function FlowProvider({ children }: FlowProviderProps) {
       reactFlowInstance.setNodes(flow.nodes || []);
       reactFlowInstance.setEdges(flow.edges || []);
       
-      // Always fit the nodes into view on open so nothing is left off-screen
-      // (a saved viewport can be panned away from the nodes — that's confusing,
-      // e.g. it makes the Memory node impossible to find).
-      setTimeout(() => {
-        reactFlowInstance.fitView({ padding: 0.15, duration: 400 });
-      }, 120);
+      // Restore the user's saved view so their zoom/pan persists across opens.
+      // Only fall back to fit-to-view when there's no saved viewport, or the saved
+      // one would leave every node off-screen (the case that made the Memory node
+      // un-findable). This keeps zoom stable while never stranding the user.
+      const fitView = () => reactFlowInstance.fitView({ padding: 0.15, duration: 300 });
+      if (flow.viewport) {
+        reactFlowInstance.setViewport(flow.viewport);
+        setTimeout(() => {
+          const nodes = reactFlowInstance.getNodes();
+          if (!nodes.length) return;
+          const { x, y, zoom } = reactFlowInstance.getViewport();
+          const el = document.querySelector('.react-flow') as HTMLElement | null;
+          const w = el?.clientWidth ?? window.innerWidth;
+          const h = el?.clientHeight ?? window.innerHeight;
+          const vx0 = -x / zoom, vy0 = -y / zoom, vx1 = (-x + w) / zoom, vy1 = (-y + h) / zoom;
+          const anyVisible = nodes.some((n) => {
+            const nx = n.position?.x ?? 0;
+            const ny = n.position?.y ?? 0;
+            const nw = (n as any).measured?.width ?? (n as any).width ?? 200;
+            const nh = (n as any).measured?.height ?? (n as any).height ?? 100;
+            return nx + nw >= vx0 && nx <= vx1 && ny + nh >= vy0 && ny <= vy1;
+          });
+          if (!anyVisible) fitView();
+        }, 200);
+      } else {
+        setTimeout(fitView, 120);
+      }
 
       setIsUnsaved(false);
       
