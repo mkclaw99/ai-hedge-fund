@@ -90,10 +90,15 @@ def distill_brief(text: str, *, api_keys: dict | None = None) -> str:
     try:
         from src.llm.models import get_model
 
+        from src.utils.token_usage import UsageCallback
+
         model = get_model(_DISTILL_MODEL, _DISTILL_PROVIDER, api_keys)
         if model is None:
             raise RuntimeError("distill model unavailable")
-        result = model.invoke(_DISTILL_PROMPT.format(text=text))
+        result = model.invoke(
+            _DISTILL_PROMPT.format(text=text),
+            config={"callbacks": [UsageCallback(_DISTILL_PROVIDER, _DISTILL_MODEL)]},
+        )
         brief = getattr(result, "content", None) or str(result)
         brief = brief.strip()
         if brief:

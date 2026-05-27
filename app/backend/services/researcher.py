@@ -15,6 +15,7 @@ import logging
 
 from app.backend.services import analyst_mcp
 from app.backend.services.research_area import discover_universe, validate_companies
+from src.utils.token_usage import UsageCallback
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,8 @@ async def fundamental_research(theme: str, *, materials: str = "", mandate: str 
             materials=(materials or "(none)").strip()[:_MAX_MATERIALS_CHARS],
             research="\n".join(f"- {r.get('title')}" for r in research_items[:15]) or "(none on file)",
         )
-        return (getattr(model.invoke(prompt), "content", "") or "").strip()
+        result = model.invoke(prompt, config={"callbacks": [UsageCallback(_PROVIDER, _MODEL)]})
+        return (getattr(result, "content", "") or "").strip()
     except Exception as e:
         logger.warning("fundamental_research failed: %s", e)
         return ""
@@ -126,7 +128,8 @@ async def extract_companies(theme: str, *, research_note: str = "", materials: s
             candidates=_fmt_candidates(candidates),
             max=max_companies,
         )
-        parsed = extract_json_from_response(getattr(model.invoke(prompt), "content", "") or "")
+        result = model.invoke(prompt, config={"callbacks": [UsageCallback(_PROVIDER, _MODEL)]})
+        parsed = extract_json_from_response(getattr(result, "content", "") or "")
     except Exception as e:
         logger.warning("extract_companies synthesis failed: %s", e)
 

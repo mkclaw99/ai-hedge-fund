@@ -1,8 +1,8 @@
 import { cn } from '@/lib/utils';
 import { CubeIcon } from '@radix-ui/react-icons';
-import { Key, Palette } from 'lucide-react';
+import { BarChart3, Key, Palette } from 'lucide-react';
 import { useState } from 'react';
-import { ApiKeysSettings, Models } from './';
+import { ApiKeysSettings, Models, TokenUsage } from './';
 import { ThemeSettings } from './appearance';
 
 interface SettingsProps {
@@ -33,6 +33,12 @@ export function Settings({ className }: SettingsProps) {
       description: 'Local and cloud AI models',
     },
     {
+      id: 'usage',
+      label: 'Token Usage',
+      icon: BarChart3,
+      description: 'Cumulative LLM token usage by model',
+    },
+    {
       id: 'theme',
       label: 'Theme',
       icon: Palette,
@@ -44,6 +50,8 @@ export function Settings({ className }: SettingsProps) {
     switch (selectedSection) {
       case 'models':
         return <Models />;
+      case 'usage':
+        return <TokenUsage />;
       case 'theme':
         return <ThemeSettings />;
       case 'api':
