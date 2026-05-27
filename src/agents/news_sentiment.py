@@ -1,7 +1,7 @@
 
 
 from langchain_core.messages import HumanMessage
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 from src.data.models import CompanyNews
 import pandas as pd
 import numpy as np
@@ -19,7 +19,13 @@ class Sentiment(BaseModel):
     """Represents the sentiment of a news article."""
 
     sentiment: Literal["positive", "negative", "neutral"]
-    confidence: int = Field(description="Confidence 0-100")
+    # LLMs (e.g. Gemini) sometimes name this field "confidence_score"; accept
+    # either so a naming mismatch doesn't fail validation and force a neutral
+    # fallback for every article.
+    confidence: int = Field(
+        description="Confidence 0-100",
+        validation_alias=AliasChoices("confidence", "confidence_score"),
+    )
 
 
 def news_sentiment_agent(state: AgentState, agent_id: str = "news_sentiment_agent"):
