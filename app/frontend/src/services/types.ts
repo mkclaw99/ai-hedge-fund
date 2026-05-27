@@ -55,6 +55,7 @@ export interface HedgeFundRequest extends BaseHedgeFundRequest {
   research_theme?: string;
   research_materials?: string;
   research_max_companies?: number;
+  research_schedule?: string; // off | daily | weekly
 }
 
 export interface BacktestRequest extends BaseHedgeFundRequest {

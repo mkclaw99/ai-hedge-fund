@@ -138,6 +138,7 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     research_theme: Optional[str] = None
     research_materials: Optional[str] = None
     research_max_companies: Optional[int] = 10
+    research_schedule: Optional[str] = "off"  # off | daily | weekly — auto-refresh cadence
 
     def get_start_date(self) -> str:
         """Calculate start date if not provided"""
