@@ -7,11 +7,31 @@ import {
 } from '@/components/ui/dialog';
 import { useNodeContext } from '@/contexts/node-context';
 import { formatTimeFromTimestamp } from '@/utils/date-utils';
-import { formatContent } from '@/utils/text-utils';
 import { AlignJustify, Copy, Loader2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+
+// Styled element map so analyst reports (Markdown) render cleanly in the dialog.
+const MD_COMPONENTS = {
+  h1: (p: any) => <h1 className="text-lg font-semibold text-primary mt-4 mb-2 first:mt-0" {...p} />,
+  h2: (p: any) => <h2 className="text-base font-semibold text-primary mt-4 mb-2 first:mt-0 border-b border-border pb-1" {...p} />,
+  h3: (p: any) => <h3 className="text-sm font-semibold text-primary mt-3 mb-1" {...p} />,
+  p: (p: any) => <p className="mb-3 leading-7" {...p} />,
+  ul: (p: any) => <ul className="list-disc pl-5 mb-3 space-y-1" {...p} />,
+  ol: (p: any) => <ol className="list-decimal pl-5 mb-3 space-y-1" {...p} />,
+  li: (p: any) => <li className="leading-6" {...p} />,
+  strong: (p: any) => <strong className="font-semibold text-primary" {...p} />,
+  em: (p: any) => <em className="italic" {...p} />,
+  code: (p: any) => <code className="rounded bg-muted px-1 py-0.5 text-[0.85em]" {...p} />,
+  pre: (p: any) => <pre className="mb-3 overflow-x-auto rounded-md bg-muted/50 p-3 text-[0.85em]" {...p} />,
+  table: (p: any) => <table className="w-full text-sm border-collapse mb-3" {...p} />,
+  th: (p: any) => <th className="border border-border px-2 py-1 text-left bg-muted/40" {...p} />,
+  td: (p: any) => <td className="border border-border px-2 py-1" {...p} />,
+  a: (p: any) => <a className="text-blue-500 underline" target="_blank" rel="noreferrer" {...p} />,
+  blockquote: (p: any) => <blockquote className="border-l-2 border-border pl-3 italic text-muted-foreground mb-3" {...p} />,
+  hr: () => <hr className="my-4 border-border" />,
+};
 
 interface AgentOutputDialogProps {
   isOpen: boolean;
@@ -197,42 +217,11 @@ export function AgentOutputDialog({
                     </div>
                   )}
                   {selectedDecision ? (
-                    (() => {
-                      const { isJson, formattedContent } = formatContent(selectedDecision);
-                      
-                      if (isJson) {
-                        // Use react-syntax-highlighter for better JSON rendering
-                        return (
-                          <div className="overflow-auto rounded-md">
-                            <SyntaxHighlighter
-                              language="json"
-                              style={vscDarkPlus}
-                              customStyle={{
-                                margin: 0,
-                                padding: '1rem',
-                                fontSize: '0.9rem',
-                                lineHeight: 1.65,
-                                whiteSpace: 'pre-wrap',
-                                wordWrap: 'break-word',
-                                overflowWrap: 'break-word',
-                              }}
-                              showLineNumbers={false}
-                              wrapLines={true}
-                              wrapLongLines={true}
-                            >
-                              {formattedContent as string}
-                            </SyntaxHighlighter>
-                          </div>
-                        );
-                      } else {
-                        // Display as regular text paragraphs
-                        return (
-                          (formattedContent as string[]).map((paragraph, idx) => (
-                            <p key={idx} className="mb-4 last:mb-0 whitespace-pre-wrap break-words text-foreground">{paragraph}</p>
-                          ))
-                        );
-                      }
-                    })()
+                    <div className="text-foreground break-words">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                        {selectedDecision}
+                      </ReactMarkdown>
+                    </div>
                   ) : nodeStatus === 'IN_PROGRESS' ? (
                     <div className="flex items-center justify-center h-full text-muted-foreground">
                       <Loader2 className="h-5 w-5 animate-spin mr-2" />

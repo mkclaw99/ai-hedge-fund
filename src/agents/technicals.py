@@ -3,6 +3,7 @@ import math
 from langchain_core.messages import HumanMessage
 
 from src.graph.state import AgentState, show_agent_reasoning
+from src.utils.analyst_report import write_analyst_report
 from src.utils.api_key import get_api_key_from_state
 import json
 import pandas as pd
@@ -135,7 +136,11 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
                 },
             },
         }
-        progress.update_status(agent_id, ticker, "Done", analysis=json.dumps(technical_analysis, indent=4))
+        progress.update_status(agent_id, ticker, "Done", analysis=write_analyst_report(
+            agent_id, "Technical Analyst", ticker,
+            technical_analysis[ticker]["signal"], technical_analysis[ticker]["confidence"],
+            technical_analysis[ticker], state,
+        ))
 
     # Create the technical analyst message
     message = HumanMessage(

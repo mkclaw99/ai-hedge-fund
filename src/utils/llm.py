@@ -58,6 +58,12 @@ def call_llm(
         prompt = _inject_fundamental_research(prompt, state)
         prompt = _inject_materials(prompt, state)
 
+    # Analysts write an extensive, well-formatted report in their `reasoning` field
+    # (the PM/risk manager keep their own concise output). One directive here covers
+    # every LLM-based analyst without editing each prompt.
+    if agent_name:
+        prompt = _inject_report_directive(prompt, agent_name)
+
     model_info = get_model_info(model_name, model_provider)
     llm = get_model(model_name, model_provider, api_keys)
 
@@ -259,6 +265,34 @@ def _inject_materials(prompt, state):
             f"{str(materials).strip()}"
         )
         return _prepend_system_text(prompt, preamble)
+    except Exception:
+        return prompt
+
+
+# Shared instruction for the analyst report style (reused by the rule-based analysts'
+# report step in src/utils/analyst_report.py, so every analyst reads the same way).
+ANALYST_REPORT_INSTRUCTIONS = (
+    "Write an extensive, well-structured analyst report in GitHub-flavored Markdown. "
+    "Use clear `##` section headings (e.g. Summary, Key Findings, Supporting Data, "
+    "Risks, Conclusion), bullet lists, and **bold** for emphasis; cite specific numbers "
+    "from the data. Be thorough and readable — this is your full report, not a one-liner."
+)
+
+
+def _inject_report_directive(prompt, agent_name):
+    """Tell analyst agents to put an extensive Markdown report in their `reasoning`.
+
+    Applies to LLM analysts only — the Portfolio Manager and Risk Manager keep their
+    own concise, decision-oriented output. Fail-open.
+    """
+    try:
+        if "portfolio_manager" in agent_name or "risk_management" in agent_name:
+            return prompt
+        directive = (
+            f"REPORT STYLE — for your `reasoning` field: {ANALYST_REPORT_INSTRUCTIONS} "
+            "Keep the other fields (signal, confidence) exactly as specified."
+        )
+        return _prepend_system_text(prompt, directive)
     except Exception:
         return prompt
 
