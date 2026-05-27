@@ -17,17 +17,19 @@ from src.memory import flow_root
 
 logger = logging.getLogger(__name__)
 
-# Cap how much source text we feed the distiller (cost/safety) and how long the
-# resulting brief can be (it's injected into every agent prompt).
-_MAX_SOURCE_CHARS = 40_000
+# We feed the full extracted text to the distiller (the brief, not the raw text, is
+# what gets injected into agents). This caps only the fail-open fallback excerpt used
+# when distillation is unavailable.
 _FALLBACK_BRIEF_CHARS = 2_000
 _DISTILL_MODEL = "gemini-3.1-pro-preview"
 _DISTILL_PROVIDER = "Google"
 
 _DISTILL_PROMPT = (
     "You are a research librarian for an investment team. Distill the source document "
-    "below into a concise investment brief (~400-600 words max) that analysts will read "
-    "as background when researching this area. Use only these sections, omitting any with "
+    "below into a thorough investment brief that analysts will read as background when "
+    "researching this area. Capture all material substance — every company, ticker, "
+    "catalyst, risk, and figure present in the source. Don't pad, but don't omit substance "
+    "or impose an artificial length limit. Use only these sections, omitting any with "
     "no material:\n"
     "## Thesis\n## Key companies / value chain (include tickers if stated)\n"
     "## Catalysts\n## Risks\n## Notable facts & figures\n\n"
@@ -69,7 +71,7 @@ def load_source_hash(flow_id: int | None) -> str | None:
 
 
 def extract_pdf_text(data: bytes) -> str:
-    """Extract text from a PDF's bytes. Raises ValueError on an unreadable file."""
+    """Extract the full text from a PDF's bytes. Raises ValueError on an unreadable file."""
     from pypdf import PdfReader
 
     try:
@@ -84,22 +86,21 @@ def extract_pdf_text(data: bytes) -> str:
 
 
 def distill_brief(text: str, *, api_keys: dict | None = None) -> str:
-    """Distill source text into a compact investment brief via Gemini (fail-open)."""
-    excerpt = text[:_MAX_SOURCE_CHARS]
+    """Distill the full source text into a compact investment brief via Gemini (fail-open)."""
     try:
         from src.llm.models import get_model
 
         model = get_model(_DISTILL_MODEL, _DISTILL_PROVIDER, api_keys)
         if model is None:
             raise RuntimeError("distill model unavailable")
-        result = model.invoke(_DISTILL_PROMPT.format(text=excerpt))
+        result = model.invoke(_DISTILL_PROMPT.format(text=text))
         brief = getattr(result, "content", None) or str(result)
         brief = brief.strip()
         if brief:
             return brief
     except Exception as e:  # fall back to a plain excerpt so upload still works
         logger.warning("Materials distillation failed, using excerpt: %s", e)
-    fallback = excerpt[:_FALLBACK_BRIEF_CHARS].strip()
+    fallback = text[:_FALLBACK_BRIEF_CHARS].strip()
     suffix = "\n\n[…excerpt truncated; distillation unavailable]" if len(text) > _FALLBACK_BRIEF_CHARS else ""
     return f"## Source excerpt\n\n{fallback}{suffix}"
 
