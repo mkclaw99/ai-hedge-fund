@@ -18,6 +18,7 @@ import { useLayoutContext } from '@/contexts/layout-context';
 import { useNodeContext } from '@/contexts/node-context';
 import { useFlowConnection } from '@/hooks/use-flow-connection';
 import { getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
+import { primaryAgentModel } from '@/lib/agent-models';
 import { getMaterials, getThemes, MaterialsStatus, ResearchTheme, uploadMaterials } from '@/services/research-api';
 import { type ResearchAreaNode } from '../types';
 import { NodeShell } from './node-shell';
@@ -131,6 +132,9 @@ export function ResearchAreaNode({
         agentModels.push({ agent_id: node.id, model_name: model.model_name, model_provider: model.provider as any });
       }
     }
+    // Agents without their own model inherit this flow-wide default (instead of the
+    // backend's gpt-4.1/OpenAI fallback, which fails when only a non-OpenAI key is set).
+    const primaryModel = primaryAgentModel(agentModels);
 
     runFlow({
       tickers: [], // resolved by the backend from the theme
@@ -143,8 +147,8 @@ export function ResearchAreaNode({
       graph_nodes: agentNodes.map((node) => ({ id: node.id, type: node.type, data: node.data, position: node.position })),
       graph_edges: validEdges,
       agent_models: agentModels,
-      model_name: undefined,
-      model_provider: undefined,
+      model_name: primaryModel.model_name,
+      model_provider: primaryModel.model_provider as any,
     });
   };
 

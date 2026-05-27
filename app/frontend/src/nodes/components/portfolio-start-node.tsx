@@ -18,6 +18,7 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { primaryAgentModel } from '@/lib/agent-models';
 import { useFlowContext } from '@/contexts/flow-context';
 import { useLayoutContext } from '@/contexts/layout-context';
 import { useNodeContext } from '@/contexts/node-context';
@@ -209,6 +210,10 @@ export function PortfolioStartNode({
     // For now, extract tickers for current API compatibility
     const tickerList = positions.map(pos => pos.ticker.trim()).filter(ticker => ticker !== '');
     
+    // Agents without their own model inherit this flow-wide default (instead of the
+    // backend's gpt-4.1/OpenAI fallback, which fails when only a non-OpenAI key is set).
+    const primaryModel = primaryAgentModel(agentModels);
+
     // Check if we're in backtest mode
     if (runMode === 'backtest') {
       // Use the flow connection hook to run the backtest with selected dates
@@ -227,8 +232,8 @@ export function PortfolioStartNode({
         end_date: endDate,
         initial_capital: parseFloat(initialCash) || 100000,
         margin_requirement: 0.0, // Default margin requirement
-        model_name: undefined,
-        model_provider: undefined,
+        model_name: primaryModel.model_name,
+        model_provider: primaryModel.model_provider as any,
         // Pass portfolio positions to backend
         portfolio_positions: portfolioPositions,
       });
@@ -246,8 +251,8 @@ export function PortfolioStartNode({
         graph_edges: validEdges,
         agent_models: agentModels,
         // No global model - each agent uses its own model or system default
-        model_name: undefined,
-        model_provider: undefined,
+        model_name: primaryModel.model_name,
+        model_provider: primaryModel.model_provider as any,
         start_date: threeMonthsAgo.toISOString().split('T')[0],
         end_date: today.toISOString().split('T')[0],
         initial_cash: parseFloat(initialCash) || 100000,
