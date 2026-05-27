@@ -46,27 +46,35 @@ async def resolve_run(request_data, db) -> dict:
     research_note = ""
 
     if request_data.research_theme and not tickers:
-        # The fundamental researcher drives discovery: it reads the theme + materials
-        # (notes + PDF brief) under the researcher's mandate, writes a research note,
-        # and extracts the validated company universe.
-        research = await researcher.research(
+        base_materials = merge_materials(request_data.research_materials, pdf_brief)
+        # Pass 1 — Fundamental Research: the topic researcher writes the research note.
+        research_note = await researcher.fundamental_research(
             request_data.research_theme,
-            materials=merge_materials(request_data.research_materials, pdf_brief),
+            materials=base_materials,
             mandate=request_data.research_mandate or "",
+            api_keys=request_data.api_keys,
+        )
+        store_research_note(request_data.flow_id, research_note)
+        # Pass 2 — Fundamental Companies: extract the validated universe from the note.
+        ext = await researcher.extract_companies(
+            request_data.research_theme,
+            research_note=research_note,
+            materials=base_materials,
+            mandate=request_data.research_company_mandate or "",
             max_companies=request_data.research_max_companies or 10,
             api_keys=request_data.api_keys,
         )
-        if research.get("error") or not research.get("tickers"):
-            reason = research.get("error") or "all candidates were foreign, delisted, or name-mismatched"
-            return {"tickers": [], "materials": "", "discovery": research, "error": reason}
-        tickers = research["tickers"]
+        if ext.get("error") or not ext.get("tickers"):
+            reason = ext.get("error") or "all candidates were foreign, delisted, or name-mismatched"
+            return {"tickers": [], "materials": "", "discovery": {**ext, "research_note": research_note}, "error": reason}
+        tickers = ext["tickers"]
         request_data.tickers = tickers
-        discovery = research
-        research_note = research.get("research_note") or ""
-        store_research_note(request_data.flow_id, research_note)
+        discovery = {**ext, "research_note": research_note}
 
-    # Grounding injected into every agent: notes + PDF brief + the researcher's note.
-    materials = merge_materials(request_data.research_materials, pdf_brief, research_note)
+    # User-provided grounding (notes + PDF brief). The Fundamental Research note is
+    # injected separately as shared FR memory for every role (see call_llm
+    # _inject_fundamental_research), so it is NOT duplicated here.
+    materials = merge_materials(request_data.research_materials, pdf_brief)
     return {"tickers": tickers, "materials": materials, "discovery": discovery, "error": None}
 
 

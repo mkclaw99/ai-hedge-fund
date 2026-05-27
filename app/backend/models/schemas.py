@@ -137,7 +137,8 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     # at run time; materials are user-provided grounding injected into the analysts.
     research_theme: Optional[str] = None
     research_materials: Optional[str] = None
-    research_mandate: Optional[str] = None  # the researcher's lens/method driving the research
+    research_mandate: Optional[str] = None  # Fundamental Research node: the topic researcher's lens
+    research_company_mandate: Optional[str] = None  # Fundamental Companies node: the extraction lens
     research_max_companies: Optional[int] = 10
     research_schedule: Optional[str] = "off"  # off | daily | weekly — auto-refresh cadence
 

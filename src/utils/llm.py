@@ -51,9 +51,11 @@ def call_llm(
     if state and agent_name and "portfolio_manager" not in agent_name:
         prompt = _inject_self_memory(prompt, agent_name, state)
 
-    # Inject the research area's user-provided materials, if any. This is flow-level
-    # grounding shared by every agent (including the Portfolio Manager).
+    # The Fundamental Research role's note is shared memory for EVERY role (analysts,
+    # PM, …) — the common understanding of the area, unlike an analyst's private signals.
+    # Plus the user-provided materials. Both flow-level, injected for all agents.
     if state:
+        prompt = _inject_fundamental_research(prompt, state)
         prompt = _inject_materials(prompt, state)
 
     model_info = get_model_info(model_name, model_provider)
@@ -197,6 +199,39 @@ def _inject_self_memory(prompt, agent_name, state):
             "Your own prior research on these tickers from earlier runs "
             "(your view only — stay independent; weigh it, don't just repeat it):\n"
             f"{digest}"
+        )
+        return _prepend_system_text(prompt, preamble)
+    except Exception:
+        return prompt
+
+
+def _inject_fundamental_research(prompt, state):
+    """Prepend the flow's Fundamental Research note — shared memory for every role.
+
+    The note (produced by the Fundamental Research role and stored per flow) is
+    common ground for all roles, so it's injected into every agent's prompt and
+    persists across runs (read from the store). Reads the file directly via
+    ``flow_root`` to avoid an app-layer import. Fail-open.
+    """
+    try:
+        from pathlib import Path
+
+        from src.memory import flow_root
+
+        flow_slug = (state.get("metadata", {}) or {}).get("flow_slug")
+        root = flow_root(flow_slug)
+        if not root:
+            return prompt
+        note_path = Path(root) / "materials" / "research_note.md"
+        if not note_path.exists():
+            return prompt
+        note = note_path.read_text(encoding="utf-8").strip()
+        if not note:
+            return prompt
+        preamble = (
+            "Fundamental research for this area (shared context from the Fundamental "
+            "Research role — common ground for every role; weigh it):\n"
+            f"{note}"
         )
         return _prepend_system_text(prompt, preamble)
     except Exception:
