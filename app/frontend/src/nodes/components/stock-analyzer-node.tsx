@@ -200,7 +200,9 @@ export function StockAnalyzerNode({
     // Trading Account node (global, no edges): honour its Auto-trade opt-in to forward
     // PM decisions to Alpaca PAPER on the backend. Default off.
     const tradingNode = allNodes.find((n) => n.type === 'trading-account-node');
-    const placePaperOrders = !!(tradingNode && (getNodeInternalState(tradingNode.id) as any)?.autoTrade);
+    const tradingState = (tradingNode ? getNodeInternalState(tradingNode.id) : null) as any;
+    const placePaperOrders = !!tradingState?.autoTrade;
+    const startingBudget = Number(tradingState?.startingBudget ?? 0) || undefined;
 
     // Check if we're in backtest mode
     if (runMode === 'backtest') {
@@ -223,6 +225,7 @@ export function StockAnalyzerNode({
         model_name: primaryModel.model_name,
         model_provider: primaryModel.model_provider as any,
         place_paper_orders: placePaperOrders,
+        starting_budget: startingBudget,
       });
     } else {
       // Use the regular hedge fund API for single run
@@ -241,6 +244,7 @@ export function StockAnalyzerNode({
         model_name: primaryModel.model_name,
         model_provider: primaryModel.model_provider as any,
         place_paper_orders: placePaperOrders,
+        starting_budget: startingBudget,
         start_date: startDate,
         end_date: endDate,
       });

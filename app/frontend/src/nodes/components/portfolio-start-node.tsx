@@ -217,7 +217,9 @@ export function PortfolioStartNode({
     // Trading Account node (global, no edges): honour its Auto-trade opt-in to forward
     // PM decisions to Alpaca PAPER on the backend. Default off.
     const tradingNode = allNodes.find((n) => n.type === 'trading-account-node');
-    const placePaperOrders = !!(tradingNode && (getNodeInternalState(tradingNode.id) as any)?.autoTrade);
+    const tradingState = (tradingNode ? getNodeInternalState(tradingNode.id) : null) as any;
+    const placePaperOrders = !!tradingState?.autoTrade;
+    const startingBudget = Number(tradingState?.startingBudget ?? 0) || undefined;
 
     // Check if we're in backtest mode
     if (runMode === 'backtest') {
@@ -240,6 +242,7 @@ export function PortfolioStartNode({
         model_name: primaryModel.model_name,
         model_provider: primaryModel.model_provider as any,
         place_paper_orders: placePaperOrders,
+        starting_budget: startingBudget,
         // Pass portfolio positions to backend
         portfolio_positions: portfolioPositions,
       });
@@ -260,6 +263,7 @@ export function PortfolioStartNode({
         model_name: primaryModel.model_name,
         model_provider: primaryModel.model_provider as any,
         place_paper_orders: placePaperOrders,
+        starting_budget: startingBudget,
         start_date: threeMonthsAgo.toISOString().split('T')[0],
         end_date: today.toISOString().split('T')[0],
         initial_cash: parseFloat(initialCash) || 100000,

@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 # Hard-coded paper endpoint — never expose this module to the live host.
 _PAPER_BASE = "https://paper-api.alpaca.markets/v2"
+# Alpaca's market-data API (free tier accessible with the same paper key).
+_DATA_BASE = "https://data.alpaca.markets/v2"
 
 
 def _headers(api_keys: dict | None) -> dict | None:
@@ -117,6 +119,35 @@ def place_order(api_keys: dict | None, *, symbol: str, side: str, qty) -> dict:
         return {**out, "ok": False, "error": f"Alpaca {r.status_code}: {(msg or '')[:200]}"}
     except Exception as e:
         return {**out, "ok": False, "error": str(e)[:200]}
+
+
+def get_latest_prices(api_keys: dict | None, tickers) -> dict:
+    """Batch-fetch the latest trade price for each ticker. Returns ``{symbol: price}``
+    for symbols Alpaca returned a trade for; others are simply omitted (caller
+    should skip those tickers). Fail-open."""
+    h = _headers(api_keys)
+    syms = [str(t).upper() for t in (tickers or []) if t]
+    if not h or not syms:
+        return {}
+    try:
+        url = f"{_DATA_BASE}/stocks/trades/latest?symbols={','.join(syms)}"
+        r = requests.get(url, headers=h, timeout=10)
+        if r.status_code != 200:
+            return {}
+        data = (r.json() or {}).get("trades") or {}
+        out: dict[str, float] = {}
+        for sym, trade in data.items():
+            p = (trade or {}).get("p")
+            if p is None:
+                continue
+            try:
+                out[sym.upper()] = float(p)
+            except (TypeError, ValueError):
+                continue
+        return out
+    except Exception as e:
+        logger.warning("alpaca data /trades/latest failed: %s", e)
+        return {}
 
 
 def get_positions(api_keys: dict | None) -> list[dict]:
