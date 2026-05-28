@@ -137,6 +137,11 @@ export function ResearchAreaNode({
     // backend's gpt-4.1/OpenAI fallback, which fails when only a non-OpenAI key is set).
     const primaryModel = primaryAgentModel(agentModels);
 
+    // Trading Account node is global (no edges) — scan all nodes; honour its Auto-trade
+    // opt-in (default off) to forward PM decisions to Alpaca PAPER on the backend.
+    const tradingNode = allNodes.find((n) => n.type === 'trading-account-node');
+    const placePaperOrders = !!(tradingNode && (getNodeInternalState(tradingNode.id) as any)?.autoTrade);
+
     runFlow({
       tickers: [], // resolved by the backend from the theme
       research_theme: theme,
@@ -150,6 +155,7 @@ export function ResearchAreaNode({
       agent_models: agentModels,
       model_name: primaryModel.model_name,
       model_provider: primaryModel.model_provider as any,
+      place_paper_orders: placePaperOrders,
     });
   };
 

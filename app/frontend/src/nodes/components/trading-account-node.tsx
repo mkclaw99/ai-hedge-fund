@@ -18,6 +18,8 @@ export function TradingAccountNode({ data, selected, id, isConnectable }: NodePr
   // shown alongside this; we don't try to push this into Alpaca (paper accounts
   // can only be reset from the Alpaca dashboard).
   const [startingBudget, setStartingBudget] = useNodeState(id, 'startingBudget', 100000);
+  // Opt-in: submit the PM's decisions as Alpaca PAPER orders. Default OFF.
+  const [autoTrade, setAutoTrade] = useNodeState<boolean>(id, 'autoTrade', false);
 
   const [account, setAccount] = useState<PaperAccount | null>(null);
   const [loading, setLoading] = useState(true);
@@ -100,6 +102,33 @@ export function TradingAccountNode({ data, selected, id, isConnectable }: NodePr
                 onChange={(e) => setStartingBudget(parseFloat(e.target.value) || 0)}
                 className="nodrag h-9 w-full rounded-md border border-border bg-node px-3 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
+            </div>
+
+            {/* Auto-trade toggle (opt-in) */}
+            <div className="flex flex-col gap-2">
+              <div className="text-subtitle text-primary flex items-center gap-1">
+                <Tooltip delayDuration={200}>
+                  <TooltipTrigger asChild><span>Auto-trade</span></TooltipTrigger>
+                  <TooltipContent side="right" className="max-w-xs">
+                    When ON, the Portfolio Manager's per-ticker decisions (buy/sell/short/cover) are
+                    submitted as MARKET, DAY orders on your Alpaca PAPER account after each run.
+                    Off by default. Paper-only — there is no path to a live account.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              <label className="nodrag flex items-center gap-2 cursor-pointer text-sm select-none">
+                <input
+                  type="checkbox"
+                  checked={!!autoTrade}
+                  onChange={(e) => setAutoTrade(e.target.checked)}
+                  className="h-4 w-4 cursor-pointer accent-emerald-500"
+                />
+                <span className={autoTrade ? 'text-primary font-medium' : 'text-muted-foreground'}>
+                  {autoTrade
+                    ? 'ON — PM decisions will be placed on Alpaca PAPER'
+                    : 'OFF — PM decisions are not submitted'}
+                </span>
+              </label>
             </div>
 
             {/* Live Alpaca paper state */}

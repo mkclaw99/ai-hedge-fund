@@ -70,6 +70,55 @@ def get_account(api_keys: dict | None) -> dict:
         return {"connected": False, "paper": True, "reason": f"Could not reach paper-api: {e}"}
 
 
+def place_order(api_keys: dict | None, *, symbol: str, side: str, qty) -> dict:
+    """Submit a *market, day* order on the PAPER account.
+
+    Returns ``{ok, symbol, side, qty, id?, status?, error?}``. Fail-open: an
+    invalid input or network problem returns ``ok=False`` with an error string;
+    callers continue with the next order. **All paths route through the
+    hard-coded paper host** — there is no way to land on the live account.
+    """
+    out = {"symbol": str(symbol or "").upper(), "side": str(side or "").lower(), "qty": qty}
+    h = _headers(api_keys)
+    if not h:
+        return {**out, "ok": False, "error": "no paper credentials"}
+    if out["side"] not in ("buy", "sell"):
+        return {**out, "ok": False, "error": f"invalid side: {side}"}
+    try:
+        qty_int = int(float(qty))
+    except (TypeError, ValueError):
+        return {**out, "ok": False, "error": f"invalid qty: {qty}"}
+    if qty_int <= 0:
+        return {**out, "ok": False, "error": "qty must be > 0"}
+    if not out["symbol"]:
+        return {**out, "ok": False, "error": "empty symbol"}
+    body = {
+        "symbol": out["symbol"],
+        "qty": str(qty_int),
+        "side": out["side"],
+        "type": "market",
+        "time_in_force": "day",
+    }
+    try:
+        r = requests.post(f"{_PAPER_BASE}/orders", headers=h, json=body, timeout=15)
+        if r.status_code in (200, 201):
+            o = r.json() or {}
+            return {
+                **out,
+                "ok": True,
+                "id": o.get("id"),
+                "status": o.get("status"),
+                "qty": o.get("qty") or qty_int,
+            }
+        try:
+            msg = (r.json() or {}).get("message") or r.text
+        except Exception:
+            msg = r.text
+        return {**out, "ok": False, "error": f"Alpaca {r.status_code}: {(msg or '')[:200]}"}
+    except Exception as e:
+        return {**out, "ok": False, "error": str(e)[:200]}
+
+
 def get_positions(api_keys: dict | None) -> list[dict]:
     """List current paper-account positions (empty list on any failure)."""
     h = _headers(api_keys)

@@ -25,7 +25,7 @@ import { useLayoutContext } from '@/contexts/layout-context';
 import { useNodeContext } from '@/contexts/node-context';
 import { useFlowConnection } from '@/hooks/use-flow-connection';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
-import { useNodeState } from '@/hooks/use-node-state';
+import { getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
 import { cn, formatKeyboardShortcut } from '@/lib/utils';
 import { type StockAnalyzerNode } from '../types';
 import { NodeShell } from './node-shell';
@@ -197,6 +197,11 @@ export function StockAnalyzerNode({
     // backend's gpt-4.1/OpenAI fallback, which fails when only a non-OpenAI key is set).
     const primaryModel = primaryAgentModel(agentModels);
 
+    // Trading Account node (global, no edges): honour its Auto-trade opt-in to forward
+    // PM decisions to Alpaca PAPER on the backend. Default off.
+    const tradingNode = allNodes.find((n) => n.type === 'trading-account-node');
+    const placePaperOrders = !!(tradingNode && (getNodeInternalState(tradingNode.id) as any)?.autoTrade);
+
     // Check if we're in backtest mode
     if (runMode === 'backtest') {
       // Use the flow connection hook to run the backtest with selected dates
@@ -217,6 +222,7 @@ export function StockAnalyzerNode({
         margin_requirement: 0.0, // Default margin requirement
         model_name: primaryModel.model_name,
         model_provider: primaryModel.model_provider as any,
+        place_paper_orders: placePaperOrders,
       });
     } else {
       // Use the regular hedge fund API for single run
@@ -234,6 +240,7 @@ export function StockAnalyzerNode({
         // No global model - each agent uses its own model or system default
         model_name: primaryModel.model_name,
         model_provider: primaryModel.model_provider as any,
+        place_paper_orders: placePaperOrders,
         start_date: startDate,
         end_date: endDate,
       });
