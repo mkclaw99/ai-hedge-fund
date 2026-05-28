@@ -578,7 +578,7 @@ def generate_fisher_output(
               {{
                 "signal": "bullish/bearish/neutral",
                 "confidence": float (0-100),
-                "reasoning": "string"
+                "reasoning": "extensive markdown investment-committee memo per the REPORT STYLE — multi-paragraph, with Thesis/Bull Case/Bear Case/Key Evidence/Risks/Verdict sections"
               }}
               """,
             ),

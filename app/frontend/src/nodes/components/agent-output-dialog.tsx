@@ -28,10 +28,35 @@ import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+// Color a memo body section's `##` heading by what the section is for — readers can
+// tell at a glance which paragraph is the bull case vs the bear case vs the risks.
+function h2AccentClass(text: string): string {
+  const t = text.toLowerCase();
+  if (t.includes('bull')) return 'border-l-4 border-emerald-500 pl-3';
+  if (t.includes('bear')) return 'border-l-4 border-red-500 pl-3';
+  if (t.includes('risk') || t.includes('change my mind') || t.includes('what would')) return 'border-l-4 border-amber-500 pl-3';
+  if (t.includes('thesis') || t.includes('summary')) return 'border-l-4 border-blue-500 pl-3';
+  if (t.includes('verdict') || t.includes('recommendation') || t.includes('conclusion')) return 'border-l-4 border-primary pl-3';
+  if (t.includes('evidence') || t.includes('findings') || t.includes('data')) return 'border-l-4 border-purple-500 pl-3';
+  return 'border-b border-border pb-1';
+}
+
+// Extract the visible text from a markdown heading's React children (used to pick a color).
+function childrenText(children: any): string {
+  if (typeof children === 'string') return children;
+  if (Array.isArray(children)) return children.map(childrenText).join('');
+  if (children && typeof children === 'object' && 'props' in children) return childrenText((children as any).props?.children);
+  return '';
+}
+
 // Styled element map so analyst reports (Markdown) render cleanly in the dialog.
 const MD_COMPONENTS = {
   h1: (p: any) => <h1 className="text-lg font-semibold text-primary mt-4 mb-2 first:mt-0" {...p} />,
-  h2: (p: any) => <h2 className="text-base font-semibold text-primary mt-4 mb-2 first:mt-0 border-b border-border pb-1" {...p} />,
+  h2: ({ children, ...rest }: any) => (
+    <h2 className={`text-base font-semibold text-primary mt-5 mb-2 first:mt-0 ${h2AccentClass(childrenText(children))}`} {...rest}>
+      {children}
+    </h2>
+  ),
   h3: (p: any) => <h3 className="text-sm font-semibold text-primary mt-3 mb-1" {...p} />,
   p: (p: any) => <p className="mb-3 leading-7" {...p} />,
   ul: (p: any) => <ul className="list-disc pl-5 mb-3 space-y-1" {...p} />,
@@ -48,6 +73,22 @@ const MD_COMPONENTS = {
   blockquote: (p: any) => <blockquote className="border-l-2 border-border pl-3 italic text-muted-foreground mb-3" {...p} />,
   hr: () => <hr className="my-4 border-border" />,
 };
+
+// Map an analyst signal to a colored chip — bullish/bearish/neutral get the obvious
+// finance colors, anything unknown stays muted.
+function signalChipClass(sig?: string): string {
+  const s = (sig || '').toLowerCase();
+  if (s === 'bullish') return 'bg-emerald-500/15 text-emerald-500 border-emerald-500/40';
+  if (s === 'bearish') return 'bg-red-500/15 text-red-500 border-red-500/40';
+  if (s === 'neutral') return 'bg-amber-500/15 text-amber-500 border-amber-500/40';
+  return 'bg-muted text-muted-foreground border-border';
+}
+
+// HTML-safe anchor id so the universe strip can jump to a section even for tickers
+// that contain dots ("MOG.A") or other URL-unfriendly chars.
+function tickerAnchor(t: string): string {
+  return `memo-${t.replace(/\W/g, '_')}`;
+}
 
 interface AgentOutputDialogProps {
   isOpen: boolean;
@@ -258,30 +299,69 @@ export function AgentOutputDialog({
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto border border-border rounded-lg">
               {reports.length > 0 ? (
-                <div className="p-5 text-[15px] leading-7 space-y-8">
-                  {reports.map((r, i) => (
-                    <section key={r.ticker}>
-                      {i > 0 && <hr className="mb-6 border-border" />}
-                      <div className="mb-2 flex items-baseline justify-between gap-3 flex-wrap">
-                        <h2 className="text-lg font-semibold text-primary">
-                          {formatTicker(r.ticker, tickerNames)}
-                        </h2>
-                        {r.fromMemory && (
-                          <span className="text-xs italic text-muted-foreground">
-                            from memory · {r.memDate}
+                <div className="text-[15px] leading-7">
+                  {/* Sticky universe strip: signal-colored pills, click to jump to a
+                      company. Doubles as an at-a-glance summary of the verdict per
+                      company without scrolling. */}
+                  {reports.length > 1 && (
+                    <div className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b border-border px-4 py-2 flex flex-wrap gap-1.5">
+                      {reports.map((r) => {
+                        const label = formatTicker(r.ticker, tickerNames);
+                        return (
+                          <a
+                            key={r.ticker}
+                            href={`#${tickerAnchor(r.ticker)}`}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              document
+                                .getElementById(tickerAnchor(r.ticker))
+                                ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            }}
+                            className={`text-xs px-2 py-1 rounded border font-medium hover:opacity-80 cursor-pointer ${signalChipClass(r.memSignal)}`}
+                            title={`${label}${r.memSignal ? ` — ${r.memSignal} ${r.memConfidence}%` : ''}`}
+                          >
+                            <span>{r.ticker}</span>
                             {r.memSignal && (
-                              <> · {r.memSignal} {r.memConfidence}%</>
+                              <span className="ml-1 uppercase tracking-wide">
+                                {r.memSignal.charAt(0)} {r.memConfidence}%
+                              </span>
                             )}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-foreground break-words">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
-                          {r.text}
-                        </ReactMarkdown>
-                      </div>
-                    </section>
-                  ))}
+                          </a>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div className="p-5 space-y-10">
+                    {reports.map((r, i) => (
+                      <section key={r.ticker} id={tickerAnchor(r.ticker)} className="scroll-mt-16">
+                        {i > 0 && <hr className="mb-8 border-border" />}
+                        <div className="mb-3 flex items-baseline justify-between gap-3 flex-wrap">
+                          <h2 className="text-xl font-semibold text-primary">
+                            {formatTicker(r.ticker, tickerNames)}
+                          </h2>
+                          <div className="flex items-center gap-2">
+                            {r.memSignal && (
+                              <span
+                                className={`text-xs uppercase font-semibold tracking-wide px-2.5 py-1 rounded-full border ${signalChipClass(r.memSignal)}`}
+                              >
+                                {r.memSignal} {r.memConfidence}%
+                              </span>
+                            )}
+                            {r.fromMemory && (
+                              <span className="text-xs italic text-muted-foreground">
+                                from memory · {r.memDate}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="text-foreground break-words">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                            {r.text}
+                          </ReactMarkdown>
+                        </div>
+                      </section>
+                    ))}
+                  </div>
                 </div>
               ) : nodeStatus === 'IN_PROGRESS' ? (
                 <div className="flex items-center justify-center h-full text-muted-foreground p-6">
