@@ -221,8 +221,78 @@ def run_graph(
         decisions = parse_hedge_fund_response(messages[-1].content)
         if isinstance(decisions, dict):
             ingest_decisions(decisions, end_date=end_date, run_id=run_id, root=root)
+            # Wire PM decisions through to Alpaca PAPER orders when explicitly enabled
+            # by the Trading Account node (fail-open: a problem with one order never
+            # breaks the run).
+            if request is not None and getattr(request, "place_paper_orders", False):
+                _place_paper_orders_for_decisions(decisions, request)
 
     return result
+
+
+# buy/cover → BUY; sell/short → SELL; hold (or anything else) → skipped.
+_ACTION_TO_SIDE = {"buy": "buy", "cover": "buy", "sell": "sell", "short": "sell"}
+
+
+def _place_paper_orders_for_decisions(decisions: dict, request) -> None:
+    """Submit the PM's per-ticker decisions as market day-orders on Alpaca PAPER.
+
+    Hard-coded paper host (in ``alpaca_paper.py``) + paper-only credentials, so
+    there's no path to a LIVE account. Each order is logged via ``progress`` so
+    the user sees it in the Output panel.
+    """
+    try:
+        from app.backend.services import alpaca_paper
+        from src.utils.progress import progress
+
+        api_keys = getattr(request, "api_keys", None) or {}
+        if not (api_keys.get("ALPACA_PAPER_API_KEY_ID") and api_keys.get("ALPACA_PAPER_SECRET_KEY")):
+            try:
+                progress.update_status("trading_account", None, "Auto-trade skipped: ALPACA_PAPER credentials not set in Settings")
+            except Exception:
+                pass
+            return
+
+        placed = 0
+        skipped = 0
+        for ticker, dec in (decisions or {}).items():
+            if not isinstance(dec, dict):
+                continue
+            action = str(dec.get("action") or "").lower()
+            qty = dec.get("quantity") or 0
+            side = _ACTION_TO_SIDE.get(action)
+            try:
+                qty_num = float(qty)
+            except (TypeError, ValueError):
+                qty_num = 0
+            if not side or qty_num <= 0:
+                skipped += 1
+                continue
+            try:
+                progress.update_status("trading_account", ticker, f"Placing {side.upper()} {int(qty_num)}…")
+            except Exception:
+                pass
+            res = alpaca_paper.place_order(api_keys, symbol=ticker, side=side, qty=qty_num)
+            msg = (
+                f"Placed {res.get('side','').upper()} {res.get('qty')} ({res.get('status','submitted')})"
+                if res.get("ok")
+                else f"Order failed: {res.get('error', 'unknown error')}"
+            )
+            try:
+                progress.update_status("trading_account", ticker, msg)
+            except Exception:
+                pass
+            placed += 1 if res.get("ok") else 0
+        try:
+            progress.update_status("trading_account", None, f"Auto-trade done: {placed} placed, {skipped} skipped")
+        except Exception:
+            pass
+    except Exception as e:  # never break the run
+        try:
+            from src.utils.progress import progress
+            progress.update_status("trading_account", None, f"Auto-trade aborted: {e}")
+        except Exception:
+            pass
 
 
 def parse_hedge_fund_response(response):

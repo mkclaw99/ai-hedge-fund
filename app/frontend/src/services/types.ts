@@ -58,6 +58,7 @@ export interface HedgeFundRequest extends BaseHedgeFundRequest {
   research_company_mandate?: string; // Fundamental Companies: extraction lens
   research_max_companies?: number;
   research_schedule?: string; // off | daily | weekly
+  place_paper_orders?: boolean; // submit PM decisions to Alpaca PAPER (opt-in via Trading Account node)
 }
 
 export interface BacktestRequest extends BaseHedgeFundRequest {
