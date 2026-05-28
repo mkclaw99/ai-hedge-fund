@@ -59,6 +59,7 @@ export interface HedgeFundRequest extends BaseHedgeFundRequest {
   research_max_companies?: number;
   research_schedule?: string; // off | daily | weekly
   place_paper_orders?: boolean; // submit PM decisions to Alpaca PAPER (opt-in via Trading Account node)
+  starting_budget?: number;     // Trading Account node's Starting Budget (drives budget-aware sizing)
 }
 
 export interface BacktestRequest extends BaseHedgeFundRequest {

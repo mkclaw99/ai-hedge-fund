@@ -145,6 +145,10 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     # PM's per-ticker decisions are submitted as market orders on the user's Alpaca
     # PAPER account. Default off — even paper orders are a real action.
     place_paper_orders: Optional[bool] = False
+    # Trading Account node's "Starting Budget" — total capital this account should deploy.
+    # BUY/SHORT orders are sized to (min(starting_budget, buying_power) / N_open_actions) ×
+    # (confidence/100) ÷ price. If unset, the run uses the account's buying_power directly.
+    starting_budget: Optional[float] = None
 
     def get_start_date(self) -> str:
         """Calculate start date if not provided"""

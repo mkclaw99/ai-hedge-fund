@@ -140,7 +140,9 @@ export function ResearchAreaNode({
     // Trading Account node is global (no edges) — scan all nodes; honour its Auto-trade
     // opt-in (default off) to forward PM decisions to Alpaca PAPER on the backend.
     const tradingNode = allNodes.find((n) => n.type === 'trading-account-node');
-    const placePaperOrders = !!(tradingNode && (getNodeInternalState(tradingNode.id) as any)?.autoTrade);
+    const tradingState = (tradingNode ? getNodeInternalState(tradingNode.id) : null) as any;
+    const placePaperOrders = !!tradingState?.autoTrade;
+    const startingBudget = Number(tradingState?.startingBudget ?? 0) || undefined;
 
     runFlow({
       tickers: [], // resolved by the backend from the theme
@@ -156,6 +158,7 @@ export function ResearchAreaNode({
       model_name: primaryModel.model_name,
       model_provider: primaryModel.model_provider as any,
       place_paper_orders: placePaperOrders,
+      starting_budget: startingBudget,
     });
   };
 

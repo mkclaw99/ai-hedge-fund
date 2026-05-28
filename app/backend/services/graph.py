@@ -230,69 +230,136 @@ def run_graph(
     return result
 
 
-# buy/cover → BUY; sell/short → SELL; hold (or anything else) → skipped.
-_ACTION_TO_SIDE = {"buy": "buy", "cover": "buy", "sell": "sell", "short": "sell"}
+# Open new position vs close existing — they're sized differently below.
+#   "buy" / "short"  → OPEN  (budget-aware sizing, takes BUY/SELL side respectively)
+#   "sell" / "cover" → CLOSE (bounded by what's actually held)
+_OPENING_SIDE = {"buy": "buy", "short": "sell"}
+_CLOSING_SIDE = {"sell": "sell", "cover": "buy"}
+
+
+def _safe_progress(*args, **kwargs):
+    try:
+        from src.utils.progress import progress
+        progress.update_status(*args, **kwargs)
+    except Exception:
+        pass
 
 
 def _place_paper_orders_for_decisions(decisions: dict, request) -> None:
-    """Submit the PM's per-ticker decisions as market day-orders on Alpaca PAPER.
+    """Submit the PM's per-ticker decisions as market day-orders on Alpaca PAPER,
+    sized by the Trading Account node's Starting Budget × confidence.
+
+    Sizing:
+      • OPEN (buy / short): position $ = min(starting_budget, buying_power) /
+        N_open_actions × (confidence/100); qty = floor(position / price).
+      • CLOSE (sell / cover): qty = min(PM qty, held qty). PM qty of 0 → skip.
 
     Hard-coded paper host (in ``alpaca_paper.py``) + paper-only credentials, so
     there's no path to a LIVE account. Each order is logged via ``progress`` so
-    the user sees it in the Output panel.
+    the user sees it in the Output panel. Fail-open throughout.
     """
     try:
         from app.backend.services import alpaca_paper
-        from src.utils.progress import progress
 
         api_keys = getattr(request, "api_keys", None) or {}
         if not (api_keys.get("ALPACA_PAPER_API_KEY_ID") and api_keys.get("ALPACA_PAPER_SECRET_KEY")):
-            try:
-                progress.update_status("trading_account", None, "Auto-trade skipped: ALPACA_PAPER credentials not set in Settings")
-            except Exception:
-                pass
+            _safe_progress("trading_account", None, "Auto-trade skipped: ALPACA_PAPER credentials not set in Settings")
             return
 
-        placed = 0
-        skipped = 0
+        # Categorize decisions into opens vs closes (skip hold / unknown / non-dict).
+        opens: list[tuple[str, str, dict]] = []   # (ticker, action, dec)
+        closes: list[tuple[str, str, dict]] = []
         for ticker, dec in (decisions or {}).items():
             if not isinstance(dec, dict):
                 continue
             action = str(dec.get("action") or "").lower()
-            qty = dec.get("quantity") or 0
-            side = _ACTION_TO_SIDE.get(action)
-            try:
-                qty_num = float(qty)
-            except (TypeError, ValueError):
-                qty_num = 0
-            if not side or qty_num <= 0:
-                skipped += 1
+            if action in _OPENING_SIDE:
+                opens.append((str(ticker).upper(), action, dec))
+            elif action in _CLOSING_SIDE:
+                closes.append((str(ticker).upper(), action, dec))
+
+        # Account snapshot (used for both budget and held positions).
+        account = alpaca_paper.get_account(api_keys)
+        positions = {
+            str(p.get("symbol") or "").upper(): float(p.get("qty") or 0)
+            for p in alpaca_paper.get_positions(api_keys)
+        }
+        buying_power = float(account.get("buying_power") or 0)
+        starting_budget = float(getattr(request, "starting_budget", None) or 0)
+        available = min(starting_budget, buying_power) if starting_budget > 0 else buying_power
+
+        # Prices for opens (Alpaca market data, batched, paper creds OK).
+        prices = (
+            alpaca_paper.get_latest_prices(api_keys, [t for t, _, _ in opens]) if opens else {}
+        )
+        per_position = (available / len(opens)) if (opens and available > 0) else 0.0
+
+        # Build sized orders. (ticker, side, qty, action, debug_msg)
+        sized: list[tuple[str, str, int, str, str]] = []
+
+        for ticker, action, dec in opens:
+            confidence = float(dec.get("confidence") or 0) / 100.0
+            if confidence <= 0:
+                confidence = 0.5  # safe default when the PM didn't provide one
+            price = prices.get(ticker)
+            if not price or price <= 0:
+                _safe_progress("trading_account", ticker, f"Skipped {action}: no latest price available")
                 continue
+            allocation = per_position * confidence
+            qty = int(allocation // price)
+            debug = f"budget ${allocation:,.0f} × ${price:,.2f}/share → {qty}"
+            if qty <= 0:
+                _safe_progress("trading_account", ticker, f"Skipped {action}: {debug} (qty would be 0)")
+                continue
+            sized.append((ticker, _OPENING_SIDE[action], qty, action, debug))
+
+        for ticker, action, dec in closes:
+            held = positions.get(ticker, 0)
             try:
-                progress.update_status("trading_account", ticker, f"Placing {side.upper()} {int(qty_num)}…")
-            except Exception:
-                pass
-            res = alpaca_paper.place_order(api_keys, symbol=ticker, side=side, qty=qty_num)
-            msg = (
-                f"Placed {res.get('side','').upper()} {res.get('qty')} ({res.get('status','submitted')})"
-                if res.get("ok")
-                else f"Order failed: {res.get('error', 'unknown error')}"
-            )
-            try:
-                progress.update_status("trading_account", ticker, msg)
-            except Exception:
-                pass
-            placed += 1 if res.get("ok") else 0
-        try:
-            progress.update_status("trading_account", None, f"Auto-trade done: {placed} placed, {skipped} skipped")
-        except Exception:
-            pass
+                pm_qty = int(float(dec.get("quantity") or 0))
+            except (TypeError, ValueError):
+                pm_qty = 0
+            if pm_qty <= 0:
+                _safe_progress("trading_account", ticker, f"Skipped {action}: PM quantity is 0")
+                continue
+            if action == "sell":
+                cap = max(0, int(held))   # only sell long shares we actually hold
+            else:  # cover
+                cap = max(0, int(-held))  # only cover short shares we actually hold
+            if cap <= 0:
+                _safe_progress("trading_account", ticker, f"Skipped {action}: no held position to close")
+                continue
+            qty = min(pm_qty, cap)
+            sized.append((ticker, _CLOSING_SIDE[action], qty, action, f"held {int(held)}, PM {pm_qty} → {qty}"))
+
+        # Submit each independently.
+        placed = 0
+        for ticker, side, qty, action, debug in sized:
+            _safe_progress("trading_account", ticker, f"Placing {side.upper()} {qty} ({action} · {debug})…")
+            res = alpaca_paper.place_order(api_keys, symbol=ticker, side=side, qty=qty)
+            if res.get("ok"):
+                placed += 1
+                _safe_progress(
+                    "trading_account",
+                    ticker,
+                    f"Placed {side.upper()} {res.get('qty')} ({res.get('status','submitted')})",
+                )
+            else:
+                _safe_progress(
+                    "trading_account",
+                    ticker,
+                    f"Order failed: {res.get('error', 'unknown error')}",
+                )
+
+        _safe_progress(
+            "trading_account",
+            None,
+            f"Auto-trade done: {placed} placed, {len(sized) - placed} failed, "
+            f"{len(opens) + len(closes) - len(sized)} skipped"
+            + (f" · budget ${available:,.0f}" if opens else ""),
+        )
     except Exception as e:  # never break the run
-        try:
-            from src.utils.progress import progress
-            progress.update_status("trading_account", None, f"Auto-trade aborted: {e}")
-        except Exception:
-            pass
+        _safe_progress("trading_account", None, f"Auto-trade aborted: {e}")
 
 
 def parse_hedge_fund_response(response):
