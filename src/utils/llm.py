@@ -272,10 +272,25 @@ def _inject_materials(prompt, state):
 # Shared instruction for the analyst report style (reused by the rule-based analysts'
 # report step in src/utils/analyst_report.py, so every analyst reads the same way).
 ANALYST_REPORT_INSTRUCTIONS = (
-    "Write an extensive, well-structured analyst report in GitHub-flavored Markdown. "
-    "Use clear `##` section headings (e.g. Summary, Key Findings, Supporting Data, "
-    "Risks, Conclusion), bullet lists, and **bold** for emphasis; cite specific numbers "
-    "from the data. Be thorough and readable — this is your full report, not a one-liner."
+    "Write a thorough **memo to the Investment Committee** in GitHub-flavored Markdown. "
+    "The committee expects you to *weigh the arguments on both sides* before reaching a "
+    "verdict — not a one-sided pitch, not a hedge that refuses to take a position. "
+    "Use these `##` section headings, in this order:\n\n"
+    "- `## Thesis` — one paragraph: the recommendation in plain English, the single "
+    "strongest reason behind it, and the confidence level.\n"
+    "- `## Bull Case` — the strongest arguments **for** the position, each backed by "
+    "specific numbers from the data (cite the figures explicitly).\n"
+    "- `## Bear Case` — the strongest arguments **against**. Steelman the opposing view; "
+    "don't strawman it. If you genuinely couldn't be wrong, say so and explain why.\n"
+    "- `## Key Evidence` — the 3–5 data points that most moved your view, with concrete "
+    "figures, ratios, and time periods.\n"
+    "- `## Risks & What Would Change My Mind` — what could you be wrong about? Which "
+    "future data points or events would flip the recommendation?\n"
+    "- `## Verdict` — restate the signal and confidence, explain *why this confidence "
+    "and not higher/lower*, and tell the committee what to watch next.\n\n"
+    "Use bullet lists and **bold** for emphasis. Be specific, balanced, and substantive — "
+    "this is a committee memo, not a one-liner. After weighing both sides, take a clear "
+    "stance; the committee values a confident, well-argued view over false balance."
 )
 
 
