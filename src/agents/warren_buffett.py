@@ -802,7 +802,7 @@ def generate_buffett_output(
                 "{{\n"
                 '  "signal": "bullish" | "bearish" | "neutral",\n'
                 '  "confidence": int,\n'
-                '  "reasoning": "short justification"\n'
+                '  "reasoning": "extensive markdown investment-committee memo per the REPORT STYLE — multi-paragraph, with Thesis/Bull Case/Bear Case/Key Evidence/Risks/Verdict sections"\n'
                 "}}"
             ),
         ]

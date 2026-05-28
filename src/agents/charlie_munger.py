@@ -834,7 +834,7 @@ def generate_munger_output(
          "{{\n"  # escaped {
          '  "signal": "bullish" | "bearish" | "neutral",\n'
          f'  "confidence": {confidence_hint},\n'
-         '  "reasoning": "short justification"\n'
+         '  "reasoning": "extensive markdown investment-committee memo per the REPORT STYLE — multi-paragraph, with Thesis/Bull Case/Bear Case/Key Evidence/Risks/Verdict sections"\n'
          "}}")  # escaped }
     ])
 
