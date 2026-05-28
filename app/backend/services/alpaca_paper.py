@@ -59,8 +59,11 @@ def get_account(api_keys: dict | None) -> dict:
                 "currency": a.get("currency") or "USD",
                 "cash": _float(a.get("cash")),
                 "equity": _float(a.get("equity")),
+                "last_equity": _float(a.get("last_equity")),
                 "buying_power": _float(a.get("buying_power")),
                 "portfolio_value": _float(a.get("portfolio_value")),
+                "long_market_value": _float(a.get("long_market_value")),
+                "short_market_value": _float(a.get("short_market_value")),
                 "status": a.get("status"),
                 "pattern_day_trader": bool(a.get("pattern_day_trader")),
             }
@@ -148,6 +151,40 @@ def get_latest_prices(api_keys: dict | None, tickers) -> dict:
     except Exception as e:
         logger.warning("alpaca data /trades/latest failed: %s", e)
         return {}
+
+
+def get_orders(api_keys: dict | None, status: str = "all", limit: int = 50) -> list[dict]:
+    """Recent paper-account orders (filled, open, cancelled, …). Empty on failure."""
+    h = _headers(api_keys)
+    if not h:
+        return []
+    try:
+        r = requests.get(
+            f"{_PAPER_BASE}/orders",
+            headers=h,
+            params={"status": status, "limit": limit, "direction": "desc"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return []
+        return [
+            {
+                "id": o.get("id"),
+                "symbol": o.get("symbol"),
+                "side": o.get("side"),
+                "qty": _float(o.get("qty")),
+                "filled_qty": _float(o.get("filled_qty")),
+                "filled_avg_price": _float(o.get("filled_avg_price")),
+                "status": o.get("status"),
+                "type": o.get("type"),
+                "submitted_at": o.get("submitted_at"),
+                "filled_at": o.get("filled_at"),
+            }
+            for o in (r.json() or [])
+        ]
+    except Exception as e:
+        logger.warning("alpaca paper /orders failed: %s", e)
+        return []
 
 
 def get_positions(api_keys: dict | None) -> list[dict]:

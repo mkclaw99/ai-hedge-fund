@@ -22,3 +22,10 @@ async def paper_positions(db: Session = Depends(get_db)):
     """Current paper-account positions."""
     api_keys = ApiKeyService(db).get_api_keys_dict()
     return {"positions": alpaca_paper.get_positions(api_keys)}
+
+
+@router.get("/paper/orders")
+async def paper_orders(db: Session = Depends(get_db), status: str = "all", limit: int = 50):
+    """Recent paper-account orders for the Details view."""
+    api_keys = ApiKeyService(db).get_api_keys_dict()
+    return {"orders": alpaca_paper.get_orders(api_keys, status=status, limit=limit)}
