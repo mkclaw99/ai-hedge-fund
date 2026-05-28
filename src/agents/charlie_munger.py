@@ -853,4 +853,5 @@ def generate_munger_output(
         agent_name=agent_id,
         state=state,
         default_factory=_default,
+        current_ticker=ticker,
     )

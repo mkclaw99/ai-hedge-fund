@@ -373,4 +373,5 @@ def _generate_burry_output(
         agent_name=agent_id,
         state=state,
         default_factory=create_default_michael_burry_signal,
+        current_ticker=ticker,
     )

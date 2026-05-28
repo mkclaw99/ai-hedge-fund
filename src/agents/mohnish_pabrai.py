@@ -357,4 +357,5 @@ def generate_pabrai_output(
         pydantic_model=MohnishPabraiSignal,
         agent_name=agent_id,
         default_factory=create_default_pabrai_signal,
+        current_ticker=ticker,
     ) 

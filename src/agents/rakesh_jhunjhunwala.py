@@ -705,4 +705,5 @@ def generate_jhunjhunwala_output(
         state=state,
         agent_name=agent_id,
         default_factory=create_default_rakesh_jhunjhunwala_signal,
+        current_ticker=ticker,
     )

@@ -465,4 +465,5 @@ def generate_ackman_output(
         agent_name=agent_id, 
         state=state,
         default_factory=create_default_bill_ackman_signal,
+        current_ticker=ticker,
     )
