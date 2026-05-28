@@ -117,7 +117,8 @@ export function ResearchAreaNode({
       (node) => reachable.has(node.id)
         && node.type !== 'memory-node'
         && node.type !== 'research-area-node'
-        && node.type !== 'research-companies-node',
+        && node.type !== 'research-companies-node'
+        && node.type !== 'trading-account-node',
     );
     const reachableIds = new Set([id, ...reachable]);
     const validEdges = allEdges.filter(

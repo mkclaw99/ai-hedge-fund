@@ -89,6 +89,18 @@ const baseNodeTypeDefinitions: Record<string, NodeTypeDefinition> = {
       },
     }),
   },
+  "Trading Account": {
+    createNode: (position: { x: number, y: number }): AppNode => ({
+      id: `trading-account-node_${generateUniqueIdSuffix()}`,
+      type: "trading-account-node",
+      position,
+      data: {
+        name: "Trading Account",
+        description: "Your trading account (paper-trading only for now). Connects read-only to Alpaca Paper to show cash, equity and buying power.",
+        status: "Idle",
+      },
+    }),
+  },
   "Fundamental Research": {
     createNode: (position: { x: number, y: number }): AppNode => ({
       id: `research-area-node_${generateUniqueIdSuffix()}`,
