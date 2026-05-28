@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """App lifecycle: check Ollama, then run the research-area refresh scheduler."""
+    # Install the persistent LLM response cache as early as possible — every
+    # LangChain LLM call from here on (analysts, PM, news sentiment, …) goes
+    # through it. Disable with HEDGE_LLM_CACHE=disabled. Fail-open: any setup
+    # error logs and the app continues uncached.
+    from src.utils.llm_cache import init_llm_cache
+    init_llm_cache()
     await _check_ollama()
     scheduler_task = None
     if research_scheduler.is_enabled():
