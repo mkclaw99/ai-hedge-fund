@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { CardContent } from '@/components/ui/card';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useNodeState } from '@/hooks/use-node-state';
+import { cn } from '@/lib/utils';
 import { getPaperAccount, PaperAccount } from '@/services/trading-api';
 import { type TradingAccountNode as TradingAccountNodeType } from '../types';
 import { NodeShell } from './node-shell';
@@ -23,6 +24,7 @@ export function TradingAccountNode({ data, selected, id, isConnectable }: NodePr
 
   const [account, setAccount] = useState<PaperAccount | null>(null);
   const [loading, setLoading] = useState(true);
+  const [toggleError, setToggleError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -38,6 +40,42 @@ export function TradingAccountNode({ data, selected, id, isConnectable }: NodePr
   }, [refresh]);
 
   const connected = !!account?.connected;
+  const canEnable = connected; // can only turn Auto-trade ON when paper creds work
+
+  // Defensive: if Auto-trade is ON and we later discover the paper account is
+  // disconnected (key revoked, network blip, …), flip it OFF and surface why.
+  useEffect(() => {
+    if (autoTrade && account && account.connected === false) {
+      setAutoTrade(false);
+      setToggleError(account.reason || 'Alpaca Paper not connected — Auto-trade turned off.');
+    }
+  }, [autoTrade, account, setAutoTrade]);
+
+  const handleToggleClick = useCallback(async () => {
+    if (autoTrade) {
+      setAutoTrade(false);
+      setToggleError(null);
+      return;
+    }
+    // Re-verify connection BEFORE turning ON — never trust a stale status.
+    setLoading(true);
+    let fresh: PaperAccount;
+    try {
+      fresh = await getPaperAccount();
+      setAccount(fresh);
+    } finally {
+      setLoading(false);
+    }
+    if (!fresh.connected) {
+      setToggleError(
+        fresh.reason ||
+          'Configure ALPACA_PAPER_API_KEY_ID and ALPACA_PAPER_SECRET_KEY in Settings → API Keys.',
+      );
+      return;
+    }
+    setToggleError(null);
+    setAutoTrade(true);
+  }, [autoTrade, setAutoTrade]);
 
   return (
     <TooltipProvider>
@@ -49,8 +87,8 @@ export function TradingAccountNode({ data, selected, id, isConnectable }: NodePr
         iconColor="text-emerald-500"
         // System node — show the canonical name/description so old saves update.
         name="Trading Account"
-        description="Your trading account (paper-trading only for now). Connects read-only to Alpaca Paper to show cash, equity and buying power."
-        hasLeftHandle={false}
+        description="Your trading account (paper-trading only for now). Connect it downstream of the Portfolio Manager to have its decisions placed as orders; otherwise it's just a status display."
+        hasLeftHandle={true}
         hasRightHandle={false}
         width="w-80"
       >
@@ -104,31 +142,68 @@ export function TradingAccountNode({ data, selected, id, isConnectable }: NodePr
               />
             </div>
 
-            {/* Auto-trade toggle (opt-in) */}
+            {/* Auto-trade toggle (opt-in, gated on paper credentials being valid) */}
             <div className="flex flex-col gap-2">
               <div className="text-subtitle text-primary flex items-center gap-1">
                 <Tooltip delayDuration={200}>
                   <TooltipTrigger asChild><span>Auto-trade</span></TooltipTrigger>
                   <TooltipContent side="right" className="max-w-xs">
-                    When ON, the Portfolio Manager's per-ticker decisions (buy/sell/short/cover) are
-                    submitted as MARKET, DAY orders on your Alpaca PAPER account after each run.
-                    Off by default. Paper-only — there is no path to a live account.
+                    When ON, the Portfolio Manager's per-ticker decisions are submitted as MARKET
+                    DAY orders on your Alpaca PAPER account after each run. Paper-only — no path
+                    to a live account. Can only be turned ON when Alpaca Paper credentials are
+                    configured and verified; flips back to OFF on a connection error.
                   </TooltipContent>
                 </Tooltip>
               </div>
-              <label className="nodrag flex items-center gap-2 cursor-pointer text-sm select-none">
-                <input
-                  type="checkbox"
-                  checked={!!autoTrade}
-                  onChange={(e) => setAutoTrade(e.target.checked)}
-                  className="h-4 w-4 cursor-pointer accent-emerald-500"
-                />
-                <span className={autoTrade ? 'text-primary font-medium' : 'text-muted-foreground'}>
+              <div className="flex items-center gap-3">
+                <Tooltip delayDuration={200}>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={!!autoTrade}
+                      onClick={handleToggleClick}
+                      disabled={loading || (!autoTrade && !canEnable)}
+                      className={cn(
+                        'nodrag relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 focus:ring-offset-background',
+                        autoTrade ? 'bg-emerald-500' : 'bg-muted',
+                        loading || (!autoTrade && !canEnable)
+                          ? 'opacity-50 cursor-not-allowed'
+                          : 'cursor-pointer',
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          'inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform',
+                          autoTrade ? 'translate-x-[22px]' : 'translate-x-0.5',
+                        )}
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-xs">
+                    {autoTrade
+                      ? 'Click to turn Auto-trade OFF'
+                      : canEnable
+                        ? 'Click to turn Auto-trade ON (re-verifies credentials first)'
+                        : 'Configure Alpaca Paper credentials in Settings → API Keys to enable.'}
+                  </TooltipContent>
+                </Tooltip>
+                <span
+                  className={cn(
+                    'text-sm',
+                    autoTrade ? 'text-emerald-500 font-medium' : 'text-muted-foreground',
+                  )}
+                >
                   {autoTrade
                     ? 'ON — PM decisions will be placed on Alpaca PAPER'
-                    : 'OFF — PM decisions are not submitted'}
+                    : canEnable
+                      ? 'OFF'
+                      : 'OFF — needs paper credentials'}
                 </span>
-              </label>
+              </div>
+              {toggleError && (
+                <span className="text-xs text-red-500 break-words">{toggleError}</span>
+              )}
             </div>
 
             {/* Live Alpaca paper state */}

@@ -216,7 +216,9 @@ export function PortfolioStartNode({
 
     // Trading Account node (global, no edges): honour its Auto-trade opt-in to forward
     // PM decisions to Alpaca PAPER on the backend. Default off.
-    const tradingNode = allNodes.find((n) => n.type === 'trading-account-node');
+    // Only honour the Trading Account when it's actually wired into the flow
+    // (downstream of the chain) — a disconnected one is just a status display.
+    const tradingNode = allNodes.find((n) => reachableNodes.has(n.id) && n.type === 'trading-account-node');
     const tradingState = (tradingNode ? getNodeInternalState(tradingNode.id) : null) as any;
     const placePaperOrders = !!tradingState?.autoTrade;
     const startingBudget = Number(tradingState?.startingBudget ?? 0) || undefined;
