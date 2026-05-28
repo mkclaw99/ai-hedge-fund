@@ -16,6 +16,11 @@ interface FlowContextType {
   currentFlowName: string;
   isUnsaved: boolean;
   reactFlowInstance: ReactFlowInstance;
+  // Side-channel for auto-wiring: when a palette add wants Flow.tsx to wire an
+  // edge for a newly-created node, it pushes the node id here. Flow.tsx (which
+  // owns the controlled useEdgesState) consumes and clears.
+  pendingAutoWires: string[];
+  clearPendingAutoWire: (id: string) => void;
 }
 
 const FlowContext = createContext<FlowContextType | null>(null);
@@ -46,6 +51,11 @@ export function FlowProvider({ children }: FlowProviderProps) {
   // current zoom/pan and restore that on return, so a tab switch never snaps you back
   // to a stale saved viewport.
   const viewportMemoryRef = useRef<Record<number, { x: number; y: number; zoom: number }>>({});
+  // Queue of just-added node ids that Flow.tsx should auto-wire an edge for.
+  const [pendingAutoWires, setPendingAutoWires] = useState<string[]>([]);
+  const clearPendingAutoWire = useCallback((id: string) => {
+    setPendingAutoWires((arr) => arr.filter((x) => x !== id));
+  }, []);
 
   // Calculate viewport center position with optional randomness
   const getViewportPosition = useCallback((addRandomness = false): XYPosition => {
@@ -269,6 +279,15 @@ export function FlowProvider({ children }: FlowProviderProps) {
       const position = getViewportPosition(false);
       const newNode = nodeTypeDefinition.createNode(position);
       reactFlowInstance.setNodes((nodes) => [...nodes, newNode]);
+
+      // A Trading Account dropped into a flow that already has a Portfolio
+      // Manager wants a PM → TA edge — that's almost certainly the user's
+      // intent. Flag it for Flow.tsx's auto-wire effect (which owns the
+      // controlled useEdgesState and can actually update the visible edges).
+      if (newNode.type === 'trading-account-node') {
+        setPendingAutoWires((arr) => [...arr, newNode.id]);
+      }
+
       markAsUnsaved();
     } catch (error) {
       console.error(`Failed to add component ${componentName} to flow:`, error);
@@ -392,6 +411,8 @@ export function FlowProvider({ children }: FlowProviderProps) {
     currentFlowName,
     isUnsaved,
     reactFlowInstance,
+    pendingAutoWires,
+    clearPendingAutoWire,
   };
 
   return (

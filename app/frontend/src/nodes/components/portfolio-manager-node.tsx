@@ -101,7 +101,10 @@ export function PortfolioManagerNode({
         iconColor={getStatusColor(status)}
         name={data.name || 'Portfolio Manager'}
         description={data.description}
-        hasRightHandle={false}
+        // The PM emits decisions out to the right — wired to a Trading Account
+        // node (and any future downstream consumer). Without this handle, no
+        // edge can attach to its output side.
+        hasRightHandle={true}
         status={status}
       >
         <CardContent className="p-0">
