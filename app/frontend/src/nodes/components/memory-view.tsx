@@ -7,6 +7,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { formatTicker, useTickerNames } from '@/lib/ticker-names';
 import { FlowMemory, MemoryAnalystRow } from '@/services/memory-api';
 
 export const signalColor = (signal: string) => {
@@ -57,6 +58,7 @@ function SignalTable({ rows, label }: { rows: MemoryAnalystRow[]; label: string 
  *  bottom-panel Memory tab. */
 export function MemoryView({ memory, loading }: { memory: FlowMemory | null; loading: boolean }) {
   const tickers = memory?.tickers ?? [];
+  const tickerNames = useTickerNames(tickers.map((t) => t.ticker));
 
   if (loading) {
     return <div className="py-8 text-center text-muted-foreground">Loading…</div>;
@@ -73,7 +75,7 @@ export function MemoryView({ memory, loading }: { memory: FlowMemory | null; loa
       {tickers.map((t) => (
         <div key={t.ticker} className="border border-border rounded-lg p-4 mb-3">
           <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-title font-semibold text-primary">{t.ticker}</span>
+            <span className="text-title font-semibold text-primary">{formatTicker(t.ticker, tickerNames)}</span>
             <Badge variant="outline" className={signalColor(t.consensus)}>
               consensus {t.consensus}
             </Badge>
