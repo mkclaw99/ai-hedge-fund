@@ -600,4 +600,5 @@ def generate_fisher_output(
         state=state,
         agent_name=agent_id,
         default_factory=create_default_signal,
+        current_ticker=ticker,
     )

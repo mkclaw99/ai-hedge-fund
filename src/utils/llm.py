@@ -14,6 +14,7 @@ def call_llm(
     state: AgentState | None = None,
     max_retries: int = 3,
     default_factory=None,
+    current_ticker: str | None = None,
 ) -> BaseModel:
     """
     Makes an LLM call with retry logic, handling both JSON supported and non-JSON supported models.
@@ -63,6 +64,22 @@ def call_llm(
     # every LLM-based analyst without editing each prompt.
     if agent_name:
         prompt = _inject_report_directive(prompt, agent_name)
+
+    # Inject upstream analysts' prose: if the flow wires analyst → Buffett → PM,
+    # Buffett's call sees the upstream analysts' full memos and the PM's call sees
+    # Buffett's full memo. Wiring intent lives in state["metadata"]["upstream_map"];
+    # no upstream wired ⇒ this is a no-op. Per-ticker analyst calls pass
+    # `current_ticker` so only the relevant memo is included; whole-universe
+    # callers (the PM) leave it None to get every ticker's upstream memo.
+    if state and agent_name:
+        try:
+            from src.utils.upstream_prose import build_upstream_block
+
+            block = build_upstream_block(state, agent_name, current_ticker=current_ticker)
+            if block:
+                prompt = _prepend_system_text(prompt, block)
+        except Exception:
+            pass
 
     model_info = get_model_info(model_name, model_provider)
     llm = get_model(model_name, model_provider, api_keys)

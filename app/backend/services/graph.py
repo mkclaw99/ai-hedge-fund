@@ -35,8 +35,14 @@ def extract_base_agent_key(unique_id: str) -> str:
 
 
 # Helper function to create the agent graph
-def create_graph(graph_nodes: list, graph_edges: list) -> StateGraph:
-    """Create the workflow based on the React Flow graph structure."""
+def create_graph(graph_nodes: list, graph_edges: list) -> tuple[StateGraph, dict[str, list[str]]]:
+    """Create the workflow + return the upstream map.
+
+    The upstream map (target_agent_id → list of upstream agent_ids) reflects the
+    user's wiring intent. The DAG re-routes analyst→PM edges through risk_manager
+    for execution order; the upstream map preserves the *original* wiring so the
+    prose can flow downstream (analyst → Buffett → PM) at prompt-build time.
+    """
     graph = StateGraph(AgentState)
     graph.add_node("start_node", start)
 
@@ -86,19 +92,28 @@ def create_graph(graph_nodes: list, graph_edges: list) -> StateGraph:
     nodes_with_incoming_edges = set()
     nodes_with_outgoing_edges = set()
     direct_to_portfolio_managers = {}  # Map analyst ID to portfolio manager ID for direct connections
-    
+    # Upstream map: for every agent, which other agents' MEMOS feed it. The user
+    # wires the flow analyst→Buffett→PM and expects the prose to ride along. We
+    # capture every agent→agent edge here (regardless of how LangGraph re-routes
+    # it for execution order) so downstream agents can read upstream prose at
+    # prompt-build time. Risk-manager re-routing for analyst→PM edges only
+    # changes the DAG; the user's intent (analyst feeds PM) is preserved here.
+    upstream_map: dict[str, list[str]] = {}
+
     for edge in graph_edges:
         # Only consider edges between agent nodes (not from stock tickers)
         if edge.source in agent_ids_set and edge.target in agent_ids_set:
             source_base_key = extract_base_agent_key(edge.source)
             target_base_key = extract_base_agent_key(edge.target)
-            
+
             nodes_with_incoming_edges.add(edge.target)
             nodes_with_outgoing_edges.add(edge.source)
-            
+
+            upstream_map.setdefault(edge.target, []).append(edge.source)
+
             # Check if this is a direct connection from analyst to portfolio manager
-            if (source_base_key in ANALYST_CONFIG and 
-                source_base_key != "portfolio_manager" and 
+            if (source_base_key in ANALYST_CONFIG and
+                source_base_key != "portfolio_manager" and
                 target_base_key == "portfolio_manager"):
                 # Don't add direct edge to portfolio manager - we'll route through risk manager
                 direct_to_portfolio_managers[edge.source] = edge.target
@@ -128,15 +143,15 @@ def create_graph(graph_nodes: list, graph_edges: list) -> StateGraph:
 
     # Set the entry point to the start node
     graph.set_entry_point("start_node")
-    return graph
+    return graph, upstream_map
 
 
-async def run_graph_async(graph, portfolio, tickers, start_date, end_date, model_name, model_provider, request=None, flow_id=None, research_materials=None):
+async def run_graph_async(graph, portfolio, tickers, start_date, end_date, model_name, model_provider, request=None, flow_id=None, research_materials=None, upstream_map=None):
     """Async wrapper for run_graph to work with asyncio."""
     # Use run_in_executor to run the synchronous function in a separate thread
     # so it doesn't block the event loop
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, lambda: run_graph(graph, portfolio, tickers, start_date, end_date, model_name, model_provider, request, flow_id, research_materials))  # Use default executor
+    result = await loop.run_in_executor(None, lambda: run_graph(graph, portfolio, tickers, start_date, end_date, model_name, model_provider, request, flow_id, research_materials, upstream_map))  # Use default executor
     return result
 
 
@@ -151,6 +166,7 @@ def run_graph(
     request=None,
     flow_id=None,
     research_materials=None,
+    upstream_map: dict[str, list[str]] | None = None,
 ) -> dict:
     """
     Run the graph with the given portfolio, tickers,
@@ -204,6 +220,7 @@ def run_graph(
             "flow_slug": flow_slug,
             "research_materials": research_materials,  # Research-area grounding for all agents
             "request": request,  # Pass the request for agent-specific model access
+            "upstream_map": upstream_map or {},  # Wiring intent — drives upstream-prose injection
         },
     }
 

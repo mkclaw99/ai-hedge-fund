@@ -416,4 +416,5 @@ def generate_damodaran_output(
         agent_name=agent_id,
         state=state,
         default_factory=default_signal,
+        current_ticker=ticker,
     )

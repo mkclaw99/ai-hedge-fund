@@ -823,4 +823,5 @@ def generate_buffett_output(
         agent_name=agent_id,
         state=state,
         default_factory=create_default_warren_buffett_signal,
+        current_ticker=ticker,
     )

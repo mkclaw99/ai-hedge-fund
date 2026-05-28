@@ -37,11 +37,11 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
         # which may resolve the tickers from a theme).
 
         # Construct agent graph using the React Flow graph structure
-        graph = create_graph(
+        state_graph, upstream_map = create_graph(
             graph_nodes=request_data.graph_nodes,
             graph_edges=request_data.graph_edges
         )
-        graph = graph.compile()
+        graph = state_graph.compile()
 
         # Log a test progress update for debugging
         progress.update_status("system", None, "Preparing hedge fund run")
@@ -127,6 +127,7 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
                         request=request_data,  # Pass the full request for agent-specific model access
                         flow_id=request_data.flow_id,  # Scope this run's research memory to its flow
                         research_materials=resolved["materials"],  # notes + distilled PDF brief
+                        upstream_map=upstream_map,  # Wiring intent for prose-flow injection
                     )
                 )
 
@@ -230,9 +231,11 @@ async def backtest(request_data: BacktestRequest, request: Request, db: Session 
             request_data.portfolio_positions
         )
 
-        # Construct agent graph using the React Flow graph structure (same as /run endpoint)
-        graph = create_graph(graph_nodes=request_data.graph_nodes, graph_edges=request_data.graph_edges)
-        graph = graph.compile()
+        # Construct agent graph using the React Flow graph structure (same as /run endpoint).
+        # Backtest doesn't currently thread upstream_map through; that's fine — without it,
+        # the upstream-prose injection is a no-op and the run behaves as before.
+        state_graph, _upstream_map = create_graph(graph_nodes=request_data.graph_nodes, graph_edges=request_data.graph_edges)
+        graph = state_graph.compile()
 
         # Create backtest service with the compiled graph
         backtest_service = BacktestService(

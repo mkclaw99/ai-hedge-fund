@@ -89,7 +89,7 @@ def news_sentiment_agent(state: AgentState, agent_id: str = "news_sentiment_agen
                     f"Respond in JSON format.\n\n"
                     f"Headline: {news.title}"
                 )
-                response = call_llm(prompt, Sentiment, agent_name=agent_id, state=state)
+                response = call_llm(prompt, Sentiment, agent_name=agent_id, state=state, current_ticker=ticker)
                 if response:
                     news.sentiment = response.sentiment.lower()
                     sentiment_confidences[id(news)] = response.confidence

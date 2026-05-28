@@ -97,7 +97,10 @@ async def execute_research_run(request_data, db) -> dict:
     portfolio = create_portfolio(
         request_data.initial_cash, request_data.margin_requirement, tickers, request_data.portfolio_positions
     )
-    graph = create_graph(graph_nodes=request_data.graph_nodes, graph_edges=request_data.graph_edges).compile()
+    state_graph, upstream_map = create_graph(
+        graph_nodes=request_data.graph_nodes, graph_edges=request_data.graph_edges
+    )
+    graph = state_graph.compile()
     result = await run_graph_async(
         graph=graph,
         portfolio=portfolio,
@@ -109,5 +112,6 @@ async def execute_research_run(request_data, db) -> dict:
         request=request_data,
         flow_id=request_data.flow_id,
         research_materials=resolved["materials"],
+        upstream_map=upstream_map,
     )
     return {"result": result, "discovery": resolved["discovery"], "tickers": tickers, "error": None}
