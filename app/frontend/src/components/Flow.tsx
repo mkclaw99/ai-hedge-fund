@@ -46,7 +46,7 @@ export function Flow({ className = '' }: FlowProps) {
   const proOptions = { hideAttribution: true };
   
   // Get flow context for flow ID
-  const { currentFlowId } = useFlowContext();
+  const { currentFlowId, pendingAutoWires, clearPendingAutoWire } = useFlowContext();
   
   // Get enhanced flow actions for complete state persistence
   const { saveCurrentFlowWithCompleteState } = useEnhancedFlowActions();
@@ -242,6 +242,42 @@ export function Flow({ className = '' }: FlowProps) {
     ],
   });
   
+  // Auto-wire freshly-dropped Trading Account nodes to the Portfolio Manager.
+  // The palette add (in flow-context) flags new TA node ids in `pendingAutoWires`;
+  // we own the controlled useEdgesState here, so adding the edge from this side
+  // actually reaches the DOM. Skip if the user already has the PM → TA edge
+  // (e.g. they wired it before or the saved flow has it).
+  const autoWiredRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!isInitialized || pendingAutoWires.length === 0) return;
+    const pmNode = nodes.find((n) => n.type === 'portfolio-manager-node');
+    for (const taId of pendingAutoWires) {
+      // Idempotency: only wire each TA once, even if the effect double-fires.
+      if (autoWiredRef.current.has(taId)) {
+        clearPendingAutoWire(taId);
+        continue;
+      }
+      const taNode = nodes.find((n) => n.id === taId);
+      if (!taNode) {
+        // Node not in state yet — leave on the queue for the next tick.
+        return;
+      }
+      autoWiredRef.current.add(taId);
+      if (pmNode) {
+        const exists = edges.some((e) => e.source === pmNode.id && e.target === taId);
+        if (!exists) {
+          const newEdge: Edge = {
+            ...({ source: pmNode.id, target: taId } as Connection),
+            id: `edge-${Date.now()}-pm-ta-${taId.slice(-6)}`,
+            markerEnd: { type: MarkerType.ArrowClosed },
+          };
+          setEdges((eds) => addEdge(newEdge, eds));
+        }
+      }
+      clearPendingAutoWire(taId);
+    }
+  }, [pendingAutoWires, nodes, edges, isInitialized, setEdges, clearPendingAutoWire]);
+
   // Initialize the flow when it first renders
   const onInit = useCallback(() => {
     if (!isInitialized) {
