@@ -1,5 +1,5 @@
 import { type NodeProps } from '@xyflow/react';
-import { Loader2, RotateCw, Wallet } from 'lucide-react';
+import { BarChart3, Loader2, RotateCw, Wallet } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils';
 import { getPaperAccount, PaperAccount } from '@/services/trading-api';
 import { type TradingAccountNode as TradingAccountNodeType } from '../types';
 import { NodeShell } from './node-shell';
+import { TradingAccountDetailsDialog } from './trading-account-details-dialog';
 
 const fmt = (n?: number) =>
   typeof n === 'number' ? n.toLocaleString(undefined, { style: 'currency', currency: 'USD' }) : '—';
@@ -25,6 +26,7 @@ export function TradingAccountNode({ data, selected, id, isConnectable }: NodePr
   const [account, setAccount] = useState<PaperAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [toggleError, setToggleError] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -224,12 +226,25 @@ export function TradingAccountNode({ data, selected, id, isConnectable }: NodePr
                   {account?.account_number && (
                     <Row label="Account #" value={account.account_number} muted />
                   )}
+                  <div className="pt-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setDetailsOpen(true)}
+                      className="nodrag w-full gap-1.5"
+                    >
+                      <BarChart3 className="h-3.5 w-3.5" />
+                      Details
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>
           </div>
         </CardContent>
       </NodeShell>
+
+      <TradingAccountDetailsDialog isOpen={detailsOpen} onOpenChange={setDetailsOpen} />
     </TooltipProvider>
   );
 }

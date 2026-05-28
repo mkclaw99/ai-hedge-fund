@@ -7,7 +7,22 @@ import {
 } from '@/components/ui/dialog';
 import { useNodeContext } from '@/contexts/node-context';
 import { formatTicker, useTickerNames } from '@/lib/ticker-names';
+import { FlowMemory, MemoryAnalystRow, getFlowMemory } from '@/services/memory-api';
 import { formatTimeFromTimestamp } from '@/utils/date-utils';
+
+/** Mirror of src/memory/ingest.normalize_analyst_name — turns a node id like
+ *  "warren_buffett_a1b2c3" into the display name ("Warren Buffett") under which
+ *  the memory store keys its insights. */
+function normalizeAnalystName(agentId: string): string {
+  let n = (agentId || '').replace(/_agent$/, '');
+  n = n.replace(/_[a-z0-9]{6}$/, ''); // strip the unique 6-char node-id suffix
+  n = n.replace(/_/g, ' ').trim();
+  if (!n) return agentId;
+  return n
+    .split(/\s+/)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
 import { AlignJustify, Copy, Loader2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -90,8 +105,38 @@ export function AgentOutputDialog({
       return acc;
     }, {});
 
-  // Get all unique tickers that have decisions
-  const tickersWithDecisions = Object.keys(allAnalysis);
+  // Runtime data (this session) — keyed by ticker → reasoning text.
+  const runtimeTickers = Object.keys(allAnalysis);
+
+  // Persistent fallback from the flow's memory: when the dialog opens we look up
+  // this analyst's most recent insight per ticker so a reload doesn't show "empty".
+  const myAnalystName = normalizeAnalystName(nodeId);
+  const [memFallback, setMemFallback] = useState<Record<string, MemoryAnalystRow>>({});
+
+  useEffect(() => {
+    if (!isOpen || flowId == null) return;
+    let cancelled = false;
+    getFlowMemory(Number(flowId))
+      .then((mem: FlowMemory) => {
+        if (cancelled) return;
+        const map: Record<string, MemoryAnalystRow> = {};
+        for (const t of mem.tickers || []) {
+          const rows = (t.analysts || []).filter((r) => r.analyst === myAnalystName);
+          if (rows.length === 0) continue;
+          // Pick the most recent insight (string-sortable ISO dates).
+          const latest = [...rows].sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0];
+          if (latest?.reasoning) map[t.ticker] = latest;
+        }
+        setMemFallback(map);
+      })
+      .catch(() => setMemFallback({}));
+    return () => { cancelled = true; };
+  }, [isOpen, flowId, myAnalystName]);
+
+  // Union: tickers visible in the dialog = runtime ∪ memory fallback.
+  const tickersWithDecisions = Array.from(
+    new Set([...runtimeTickers, ...Object.keys(memFallback)]),
+  );
   // Resolve "Coherent (COHR)"-style labels (cached); falls back to the bare ticker.
   const tickerNames = useTickerNames(tickersWithDecisions);
 
@@ -107,8 +152,13 @@ export function AgentOutputDialog({
     }
   }, [tickersWithDecisions, selectedTicker]);
 
-  // Get the selected decision text
-  const selectedDecision = selectedTicker && allAnalysis[selectedTicker] ? allAnalysis[selectedTicker] : null;
+  // Get the selected decision text — prefer runtime (this session); else memory.
+  const selectedDecision = selectedTicker
+    ? allAnalysis[selectedTicker] ?? memFallback[selectedTicker]?.reasoning ?? null
+    : null;
+  // True when the analysis is coming from memory, not the current session's run.
+  const selectedFromMemory =
+    !!selectedTicker && !(selectedTicker in allAnalysis) && !!memFallback[selectedTicker];
 
   const copyToClipboard = () => {
     if (selectedDecision) {
@@ -206,7 +256,17 @@ export function AgentOutputDialog({
                 <div className="p-3 rounded-lg text-[15px] leading-7">
                   {selectedTicker && (
                     <div className="mb-3 flex justify-between items-center">
-                      <div className=" text-muted-foreground font-medium">Summary for {formatTicker(selectedTicker, tickerNames)}</div>
+                      <div className="text-muted-foreground font-medium flex items-center gap-2">
+                        <span>Summary for {formatTicker(selectedTicker, tickerNames)}</span>
+                        {selectedFromMemory && (
+                          <span className="text-xs italic font-normal">
+                            from memory · {memFallback[selectedTicker]?.date}
+                            {memFallback[selectedTicker]?.signal && (
+                              <> · {memFallback[selectedTicker].signal} {memFallback[selectedTicker].confidence}%</>
+                            )}
+                          </span>
+                        )}
+                      </div>
                       {selectedDecision && (
                         <button 
                           onClick={copyToClipboard}
