@@ -138,6 +138,11 @@ def create_workflow(selected_analysts=None):
 
 
 if __name__ == "__main__":
+    # Persistent LLM cache so re-runs on unchanged data don't re-bill tokens.
+    # Honors HEDGE_LLM_CACHE (set to "disabled" to skip). Fail-open.
+    from src.utils.llm_cache import init_llm_cache
+    init_llm_cache()
+
     inputs = parse_cli_inputs(
         description="Run the hedge fund trading system",
         require_tickers=True,
