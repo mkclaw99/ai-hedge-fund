@@ -80,7 +80,6 @@ export function AgentOutputDialog({
   const nodeStatus = nodeData.status;
   
   const [copySuccess, setCopySuccess] = useState(false);
-  const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
   const initialFocusRef = useRef<HTMLDivElement>(null);
 
   // Collect all analysis from all messages into a single analysis dictionary
@@ -133,44 +132,53 @@ export function AgentOutputDialog({
     return () => { cancelled = true; };
   }, [isOpen, flowId, myAnalystName]);
 
-  // Union: tickers visible in the dialog = runtime ∪ memory fallback.
+  // Union: tickers visible in the dialog = runtime ∪ memory fallback. The committee
+  // memo renders every company in order — no dropdown, the whole report scrolls.
   const tickersWithDecisions = Array.from(
     new Set([...runtimeTickers, ...Object.keys(memFallback)]),
   );
-  // Resolve "Coherent (COHR)"-style labels (cached); falls back to the bare ticker.
+  // Resolve "Coherent Corp (COHR)"-style labels (cached); falls back to the bare ticker.
   const tickerNames = useTickerNames(tickersWithDecisions);
 
-  // Reset selected ticker when node changes
-  useEffect(() => {
-    setSelectedTicker(null);
-  }, [nodeId]);
-
-  // If no ticker is selected but we have decisions, select the first one
-  useEffect(() => {
-    if (tickersWithDecisions.length > 0 && (!selectedTicker || !tickersWithDecisions.includes(selectedTicker))) {
-      setSelectedTicker(tickersWithDecisions[0]);
-    }
-  }, [tickersWithDecisions, selectedTicker]);
-
-  // Get the selected decision text — prefer runtime (this session); else memory.
-  const selectedDecision = selectedTicker
-    ? allAnalysis[selectedTicker] ?? memFallback[selectedTicker]?.reasoning ?? null
-    : null;
-  // True when the analysis is coming from memory, not the current session's run.
-  const selectedFromMemory =
-    !!selectedTicker && !(selectedTicker in allAnalysis) && !!memFallback[selectedTicker];
+  // Per-ticker text + source (runtime takes precedence over memory).
+  type TickerReport = {
+    ticker: string;
+    text: string;
+    fromMemory: boolean;
+    memDate?: string;
+    memSignal?: string;
+    memConfidence?: number;
+  };
+  const reports: TickerReport[] = tickersWithDecisions
+    .map((t): TickerReport | null => {
+      const runtime = allAnalysis[t];
+      if (runtime) return { ticker: t, text: runtime, fromMemory: false };
+      const mem = memFallback[t];
+      if (mem?.reasoning) {
+        return {
+          ticker: t,
+          text: mem.reasoning,
+          fromMemory: true,
+          memDate: mem.date,
+          memSignal: mem.signal,
+          memConfidence: mem.confidence,
+        };
+      }
+      return null;
+    })
+    .filter((r): r is TickerReport => r !== null);
 
   const copyToClipboard = () => {
-    if (selectedDecision) {
-      navigator.clipboard.writeText(selectedDecision)
-        .then(() => {
-          setCopySuccess(true);
-          setTimeout(() => setCopySuccess(false), 2000);
-        })
-        .catch(err => {
-          console.error('Failed to copy text: ', err);
-        });
-    }
+    if (reports.length === 0) return;
+    const combined = reports
+      .map((r) => `# ${formatTicker(r.ticker, tickerNames)}\n\n${r.text}`)
+      .join('\n\n---\n\n');
+    navigator.clipboard.writeText(combined)
+      .then(() => {
+        setCopySuccess(true);
+        setTimeout(() => setCopySuccess(false), 2000);
+      })
+      .catch((err) => console.error('Failed to copy text: ', err));
   };
 
   return (
@@ -226,91 +234,70 @@ export function AgentOutputDialog({
             </div>
           </div>
           
-          {/* Analysis Section */}
+          {/* Committee memo: every company in one scrolling report. */}
           <div className="flex flex-col min-h-0">
             <div className="flex justify-between items-center mb-3">
-              <h3 className="font-medium text-primary">Analysis</h3>
-              <div className="flex items-center gap-2">
-                {/* Ticker selector */}
-                {tickersWithDecisions.length > 0 && (
-                  <div className="flex items-center gap-1">
-                    <span className="text-xs text-muted-foreground font-medium">Ticker:</span>
-                    <select 
-                      className="text-xs p-1 rounded bg-background border border-border cursor-pointer"
-                      value={selectedTicker || ''}
-                      onChange={(e) => setSelectedTicker(e.target.value)}
-                      autoFocus={false}
-                    >
-                      {tickersWithDecisions.map((ticker) => (
-                        <option key={ticker} value={ticker}>
-                          {formatTicker(ticker, tickerNames)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+              <h3 className="font-medium text-primary">
+                Memo to the Investment Committee
+                {reports.length > 0 && (
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    {reports.length} {reports.length === 1 ? 'company' : 'companies'}
+                  </span>
                 )}
-              </div>
+              </h3>
+              {reports.length > 0 && (
+                <button
+                  onClick={copyToClipboard}
+                  className="flex items-center gap-1.5 text-xs p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground"
+                  title="Copy the whole memo to the clipboard"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  <span className="font-medium">{copySuccess ? 'Copied!' : 'Copy all'}</span>
+                </button>
+              )}
             </div>
-            <div className="flex-1 min-h-0 overflow-y-auto border border-border rounded-lg p-3">
-              {tickersWithDecisions.length > 0 ? (
-                <div className="p-3 rounded-lg text-[15px] leading-7">
-                  {selectedTicker && (
-                    <div className="mb-3 flex justify-between items-center">
-                      <div className="text-muted-foreground font-medium flex items-center gap-2">
-                        <span>Summary for {formatTicker(selectedTicker, tickerNames)}</span>
-                        {selectedFromMemory && (
-                          <span className="text-xs italic font-normal">
-                            from memory · {memFallback[selectedTicker]?.date}
-                            {memFallback[selectedTicker]?.signal && (
-                              <> · {memFallback[selectedTicker].signal} {memFallback[selectedTicker].confidence}%</>
+            <div className="flex-1 min-h-0 overflow-y-auto border border-border rounded-lg">
+              {reports.length > 0 ? (
+                <div className="p-5 text-[15px] leading-7 space-y-8">
+                  {reports.map((r, i) => (
+                    <section key={r.ticker}>
+                      {i > 0 && <hr className="mb-6 border-border" />}
+                      <div className="mb-2 flex items-baseline justify-between gap-3 flex-wrap">
+                        <h2 className="text-lg font-semibold text-primary">
+                          {formatTicker(r.ticker, tickerNames)}
+                        </h2>
+                        {r.fromMemory && (
+                          <span className="text-xs italic text-muted-foreground">
+                            from memory · {r.memDate}
+                            {r.memSignal && (
+                              <> · {r.memSignal} {r.memConfidence}%</>
                             )}
                           </span>
                         )}
                       </div>
-                      {selectedDecision && (
-                        <button 
-                          onClick={copyToClipboard}
-                          className="flex items-center gap-1.5 text-xs p-1.5 rounded hover:bg-accent transition-colors text-muted-foreground"
-                          title="Copy to clipboard"
-                        >
-                          <Copy className="h-3.5 w-3.5 " />
-                          <span className="font-medium">{copySuccess ? 'Copied!' : 'Copy'}</span>
-                        </button>
-                      )}
-                    </div>
-                  )}
-                  {selectedDecision ? (
-                    <div className="text-foreground break-words">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
-                        {selectedDecision}
-                      </ReactMarkdown>
-                    </div>
-                  ) : nodeStatus === 'IN_PROGRESS' ? (
-                    <div className="flex items-center justify-center h-full text-muted-foreground">
-                      <Loader2 className="h-5 w-5 animate-spin mr-2" />
-                      Analysis in progress...
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-center h-full text-muted-foreground">
-                      No analysis available for {formatTicker(selectedTicker || '', tickerNames)}
-                    </div>
-                  )}
+                      <div className="text-foreground break-words">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                          {r.text}
+                        </ReactMarkdown>
+                      </div>
+                    </section>
+                  ))}
                 </div>
               ) : nodeStatus === 'IN_PROGRESS' ? (
-                <div className="flex items-center justify-center h-full text-muted-foreground">
+                <div className="flex items-center justify-center h-full text-muted-foreground p-6">
                   <Loader2 className="h-5 w-5 animate-spin mr-2" />
                   Analysis in progress...
                 </div>
               ) : nodeStatus === 'COMPLETE' ? (
-                <div className="flex items-center justify-center h-full text-muted-foreground">
+                <div className="flex items-center justify-center h-full text-muted-foreground p-6">
                   Analysis completed with no results
                 </div>
               ) : nodeStatus === 'ERROR' ? (
-                <div className="flex items-center justify-center h-full text-muted-foreground">
+                <div className="flex items-center justify-center h-full text-muted-foreground p-6">
                   Analysis failed
                 </div>
               ) : (
-                <div className="flex items-center justify-center h-full text-muted-foreground">
+                <div className="flex items-center justify-center h-full text-muted-foreground p-6">
                   No analysis available
                 </div>
               )}
