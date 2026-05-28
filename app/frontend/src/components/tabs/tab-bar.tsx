@@ -8,7 +8,7 @@ import { flowService } from '@/services/flow-service';
 import { Flow } from '@/types/flow';
 import { cn } from '@/lib/utils';
 import { ChevronDown, Copy, FileText, FolderOpen, Layout, Pencil, Plus, Settings, Trash2, X } from 'lucide-react';
-import { ReactNode, useState } from 'react';
+import { ReactNode, useEffect, useRef, useState } from 'react';
 
 interface TabBarProps {
   className?: string;
@@ -27,7 +27,7 @@ const getTabIcon = (type: string): ReactNode => {
 };
 
 export function TabBar({ className }: TabBarProps) {
-  const { tabs, activeTabId, setActiveTab, closeTab, reorderTabs } = useTabsContext();
+  const { tabs, activeTabId, setActiveTab, closeTab, reorderTabs, updateFlowTabTitle } = useTabsContext();
   const {
     flows,
     createDialogOpen,
@@ -42,6 +42,45 @@ export function TabBar({ className }: TabBarProps) {
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [flowsOpen, setFlowsOpen] = useState(false);
   const [editingFlow, setEditingFlow] = useState<Flow | null>(null);
+
+  // Inline rename on the tab itself (double-click the title).
+  // We track the tab id being renamed + the in-progress text. Save flows the
+  // new name through flowService + updateFlowTabTitle (same path FlowEditDialog
+  // uses), so the rename persists across reloads. Non-flow tabs (settings, …)
+  // can't be renamed — their tab.flowId is null and we skip the affordance.
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    // Auto-focus + select-all when entering rename mode so the user can just type.
+    if (renamingTabId && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [renamingTabId]);
+
+  const startRename = (tab: { id: string; type: string; flow?: Flow; title: string }) => {
+    if (tab.type !== 'flow' || !tab.flow?.id) return;
+    setRenameValue(tab.title);
+    setRenamingTabId(tab.id);
+  };
+
+  const commitRename = async (tab: { id: string; flow?: Flow }) => {
+    const name = renameValue.trim();
+    setRenamingTabId(null);
+    if (!name || !tab.flow?.id) return;
+    try {
+      await flowService.updateFlow(tab.flow.id, { name });
+      updateFlowTabTitle(tab.flow.id, name);
+      // Refresh the dropdown's flow list so the new name shows there too.
+      await handleRefresh();
+    } catch (err) {
+      console.error('Failed to rename tab:', err);
+    }
+  };
+
+  const cancelRename = () => setRenamingTabId(null);
 
   const handleDuplicateFlow = async (flow: Flow) => {
     try {
@@ -129,9 +168,36 @@ export function TabBar({ className }: TabBarProps) {
               {getTabIcon(tab.type)}
             </div>
 
-            <span className="text-[13px] font-normal truncate min-w-0 transition-colors duration-150">
-              {tab.title}
-            </span>
+            {renamingTabId === tab.id ? (
+              <input
+                ref={renameInputRef}
+                type="text"
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitRename(tab);
+                  else if (e.key === 'Escape') cancelRename();
+                }}
+                onBlur={() => commitRename(tab)}
+                className="text-[13px] font-normal min-w-0 px-1 py-0 -my-px bg-background border border-border rounded outline-none focus:ring-1 focus:ring-blue-500"
+                style={{ width: `${Math.max(8, renameValue.length + 1)}ch` }}
+                aria-label="Rename tab"
+              />
+            ) : (
+              <span
+                className="text-[13px] font-normal truncate min-w-0 transition-colors duration-150"
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  startRename(tab);
+                }}
+                title={tab.type === 'flow' ? `${tab.title} — double-click to rename` : tab.title}
+              >
+                {tab.title}
+              </span>
+            )}
 
             <Button
               variant="ghost"
@@ -192,7 +258,7 @@ export function TabBar({ className }: TabBarProps) {
                   }}
                 >
                   <span className="truncate">{flow.name}</span>
-                  <div className="flex items-center flex-shrink-0 gap-0.5 opacity-0 group-hover:opacity-100">
+                  <div className="flex items-center flex-shrink-0 gap-0.5 opacity-60 group-hover:opacity-100">
                     <Button
                       variant="ghost"
                       size="icon"
