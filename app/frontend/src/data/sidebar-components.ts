@@ -11,6 +11,7 @@ import {
   LucideIcon,
   Network,
   Play,
+  Wallet,
   Zap
 } from 'lucide-react';
 import { Agent, getAgents } from './agents';
@@ -95,6 +96,7 @@ export const getComponentGroups = async (): Promise<ComponentGroup[]> => {
       description: "Flow-scoped facilities the agents draw on. Drop one in to see and manage it.",
       items: [
         { name: "Memory", icon: Database, description: "This flow's research memory. It accumulates each run; analysts read back their own prior calls and the Portfolio Manager reads everything." },
+        { name: "Trading Account", icon: Wallet, description: "Your trading account — paper-trading only for now (read-only Alpaca Paper). Set the starting budget and see cash / equity / buying power." },
       ]
     },
   ];

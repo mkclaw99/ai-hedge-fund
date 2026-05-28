@@ -20,6 +20,20 @@ const FINANCIAL_API_KEYS: ApiKey[] = [
     description: 'For getting financial data to power the hedge fund',
     url: 'https://financialdatasets.ai/',
     placeholder: 'your-financial-datasets-api-key'
+  },
+  {
+    key: 'ALPACA_PAPER_API_KEY_ID',
+    label: 'Alpaca Paper — Key ID',
+    description: 'Paper-trading API key ID from Alpaca (separate from any LIVE key)',
+    url: 'https://app.alpaca.markets/paper/dashboard/overview',
+    placeholder: 'PKxxxxxxxxxxxxxxxx'
+  },
+  {
+    key: 'ALPACA_PAPER_SECRET_KEY',
+    label: 'Alpaca Paper — Secret',
+    description: 'Paper-trading secret key from Alpaca (paired with the Key ID above)',
+    url: 'https://app.alpaca.markets/paper/dashboard/overview',
+    placeholder: 'your-alpaca-paper-secret'
   }
 ];
 

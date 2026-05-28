@@ -12,4 +12,5 @@ export type StockAnalyzerNode = Node<{ name: string, description: string, status
 export type MemoryNode = Node<{ name: string, description: string, status: string }, 'memory-node'>;
 export type ResearchAreaNode = Node<{ name: string, description: string, status: string }, 'research-area-node'>;
 export type ResearchCompaniesNode = Node<{ name: string, description: string, status: string }, 'research-companies-node'>;
-export type AppNode = BuiltInNode | AgentNode | InvestmentReportNode | JsonOutputNode | PortfolioStartNode | PortfolioManagerNode | StockAnalyzerNode | MemoryNode | ResearchAreaNode | ResearchCompaniesNode;
+export type TradingAccountNode = Node<{ name: string, description: string, status: string }, 'trading-account-node'>;
+export type AppNode = BuiltInNode | AgentNode | InvestmentReportNode | JsonOutputNode | PortfolioStartNode | PortfolioManagerNode | StockAnalyzerNode | MemoryNode | ResearchAreaNode | ResearchCompaniesNode | TradingAccountNode;
