@@ -6,6 +6,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { useNodeContext } from '@/contexts/node-context';
+import { formatTicker, useTickerNames } from '@/lib/ticker-names';
 import { formatTimeFromTimestamp } from '@/utils/date-utils';
 import { AlignJustify, Copy, Loader2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
@@ -91,6 +92,8 @@ export function AgentOutputDialog({
 
   // Get all unique tickers that have decisions
   const tickersWithDecisions = Object.keys(allAnalysis);
+  // Resolve "Coherent (COHR)"-style labels (cached); falls back to the bare ticker.
+  const tickerNames = useTickerNames(tickersWithDecisions);
 
   // Reset selected ticker when node changes
   useEffect(() => {
@@ -156,7 +159,7 @@ export function AgentOutputDialog({
                     .map((msg, idx) => (
                     <div key={idx} className="border-l-2 border-primary pl-3 text-sm">
                       <div className="text-foreground break-words">
-                        {msg.ticker && <span className="font-medium text-primary">[{msg.ticker}] </span>}
+                        {msg.ticker && <span className="font-medium text-primary">[{formatTicker(msg.ticker, tickerNames)}] </span>}
                         {msg.message}
                       </div>
                       <div className="text-xs text-muted-foreground mt-0.5">
@@ -190,7 +193,7 @@ export function AgentOutputDialog({
                     >
                       {tickersWithDecisions.map((ticker) => (
                         <option key={ticker} value={ticker}>
-                          {ticker}
+                          {formatTicker(ticker, tickerNames)}
                         </option>
                       ))}
                     </select>
@@ -203,7 +206,7 @@ export function AgentOutputDialog({
                 <div className="p-3 rounded-lg text-[15px] leading-7">
                   {selectedTicker && (
                     <div className="mb-3 flex justify-between items-center">
-                      <div className=" text-muted-foreground font-medium">Summary for {selectedTicker}</div>
+                      <div className=" text-muted-foreground font-medium">Summary for {formatTicker(selectedTicker, tickerNames)}</div>
                       {selectedDecision && (
                         <button 
                           onClick={copyToClipboard}
@@ -229,7 +232,7 @@ export function AgentOutputDialog({
                     </div>
                   ) : (
                     <div className="flex items-center justify-center h-full text-muted-foreground">
-                      No analysis available for {selectedTicker}
+                      No analysis available for {formatTicker(selectedTicker || '', tickerNames)}
                     </div>
                   )}
                 </div>

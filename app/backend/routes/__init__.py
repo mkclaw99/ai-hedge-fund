@@ -10,6 +10,7 @@ from app.backend.routes.language_models import router as language_models_router
 from app.backend.routes.api_keys import router as api_keys_router
 from app.backend.routes.memory import router as memory_router
 from app.backend.routes.research import router as research_router
+from app.backend.routes.tickers import router as tickers_router
 from app.backend.routes.usage import router as usage_router
 
 # Main API router
@@ -27,3 +28,4 @@ api_router.include_router(api_keys_router, tags=["api-keys"])
 api_router.include_router(memory_router, tags=["memory"])
 api_router.include_router(research_router, tags=["research"])
 api_router.include_router(usage_router, tags=["usage"])
+api_router.include_router(tickers_router, tags=["tickers"])
