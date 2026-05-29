@@ -214,10 +214,16 @@ def _inject_self_memory(prompt, agent_name, state):
         if not tickers:
             return prompt
         flow_slug = (state.get("metadata", {}) or {}).get("flow_slug")
+        root = flow_root(flow_slug)
+        if not root:
+            # Unsaved flow has no scoped wiki. Reading from the global default
+            # would pull in other flows' research — the opposite of the
+            # "self-contained flows" guarantee. Skip until the flow is saved.
+            return prompt
         digest = read_back(
             tickers,
             analyst=normalize_analyst_name(agent_name),
-            root=flow_root(flow_slug),
+            root=root,
         )
         if not digest:
             return prompt
