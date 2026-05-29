@@ -200,8 +200,17 @@ export const api = {
                       if (eventData.data) {
                         nodeContext.setOutputNodeData(flowId, eventData.data as OutputNodeData);
                       }
-                      // Mark all agents as complete when the whole process is done
+                      // Mark all agents as complete when the whole process is done.
                       nodeContext.updateAgentNodes(flowId, getAgentIds(), 'COMPLETE');
+                      // …plus everything that's still IN_PROGRESS but isn't in
+                      // graph_nodes. Implicitly-tracked agents (risk_management_agent_*,
+                      // trading_account, …) get added by progress events but the
+                      // request's `graph_nodes` doesn't list them. Some never emit a
+                      // "Done" status (trading_account in particular). Without this
+                      // sweep, those entries stay IN_PROGRESS forever — and
+                      // `isProcessing = some(IN_PROGRESS)` keeps the spinner running
+                      // indefinitely.
+                      nodeContext.completeAllInProgress(flowId, 'COMPLETE');
                       // Also update the output node
                       nodeContext.updateAgentNode(flowId, 'output', {
                         status: 'COMPLETE',
@@ -227,8 +236,10 @@ export const api = {
                       }
                       break;
                     case 'error':
-                      // Mark all agents as error when there's an error  
+                      // Mark all agents as error when there's an error
                       nodeContext.updateAgentNodes(flowId, getAgentIds(), 'ERROR');
+                      // …and sweep any implicit IN_PROGRESS entries (see complete handler).
+                      nodeContext.completeAllInProgress(flowId, 'ERROR');
                       
                       // Update flow connection state to error
                       if (flowId) {

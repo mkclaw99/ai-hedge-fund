@@ -66,6 +66,7 @@ interface NodeContextType {
   agentModels: Record<string, LanguageModel | null>;
   updateAgentNode: (flowId: string | null, nodeId: string, data: Partial<AgentNodeData> | NodeStatus) => void;
   updateAgentNodes: (flowId: string | null, nodeIds: string[], status: NodeStatus) => void;
+  completeAllInProgress: (flowId: string | null, status: NodeStatus) => void;
   setOutputNodeData: (flowId: string | null, data: OutputNodeData) => void;
   setAgentModel: (flowId: string | null, nodeId: string, model: LanguageModel | null) => void;
   getAgentModel: (flowId: string | null, nodeId: string) => LanguageModel | null;
@@ -164,10 +165,10 @@ export function NodeProvider({ children }: { children: ReactNode }) {
 
   const updateAgentNodes = useCallback((flowId: string | null, nodeIds: string[], status: NodeStatus) => {
     if (nodeIds.length === 0) return;
-    
+
     setAgentNodeData(prev => {
       const newStates = { ...prev };
-      
+
       nodeIds.forEach(id => {
         const compositeKey = createCompositeKey(flowId, id);
         newStates[compositeKey] = {
@@ -176,7 +177,33 @@ export function NodeProvider({ children }: { children: ReactNode }) {
           lastUpdated: Date.now()
         };
       });
-      
+
+      return newStates;
+    });
+  }, []);
+
+  /**
+   * Mark *every* agent in this flow that is currently IN_PROGRESS as `status`.
+   * Used by the SSE complete/error handlers — `updateAgentNodes(getAgentIds(),
+   * 'COMPLETE')` only touches the nodes the request declared, leaving
+   * implicitly-tracked agents like `risk_management_agent_*` and
+   * `trading_account` stuck on IN_PROGRESS (their progress events created
+   * entries the request never knew about, and they don't all emit a "Done"
+   * status). Reads agentNodeData via setAgentNodeData's functional updater
+   * so stale closures aren't a problem.
+   */
+  const completeAllInProgress = useCallback((flowId: string | null, status: NodeStatus) => {
+    const flowPrefix = flowId ? `${flowId}:` : '';
+    setAgentNodeData(prev => {
+      const newStates = { ...prev };
+      Object.entries(prev).forEach(([compositeKey, data]) => {
+        const belongs = flowId
+          ? compositeKey.startsWith(flowPrefix)
+          : !compositeKey.includes(':');
+        if (!belongs) return;
+        if (data?.status !== 'IN_PROGRESS') return;
+        newStates[compositeKey] = { ...data, status, lastUpdated: Date.now() };
+      });
       return newStates;
     });
   }, []);
@@ -407,6 +434,7 @@ export function NodeProvider({ children }: { children: ReactNode }) {
     agentModels,
     updateAgentNode,
     updateAgentNodes,
+    completeAllInProgress,
     setOutputNodeData: setOutputNodeDataForFlow,
     setAgentModel,
     getAgentModel,
