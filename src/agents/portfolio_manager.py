@@ -213,8 +213,11 @@ def generate_trading_decision(
     # own past decisions (fail-open, may be empty). Unlike analyst nodes — which
     # read only their own prior calls — the PM reads everything, because synthesis
     # is its job. This is the flywheel: the decision compounds on the flow's wiki.
+    # Unsaved flow ⇒ no flow_slug ⇒ no scoped wiki to read from. Skip rather than
+    # falling through to the global default, which would pull in other flows.
     flow_slug = (state.get("metadata", {}) or {}).get("flow_slug")
-    prior = read_back(tickers_for_llm, root=flow_root(flow_slug))
+    root = flow_root(flow_slug)
+    prior = read_back(tickers_for_llm, root=root) if root else ""
 
     # Minimal prompt template
     template = ChatPromptTemplate.from_messages(

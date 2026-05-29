@@ -173,22 +173,23 @@ def run_graph(
     start date, end date, show reasoning, model name,
     and model provider.
     """
-    # Each flow keeps its own research memory namespace (wiki/flow-<id>); runs
-    # without a flow id (e.g. an unsaved flow) share a "default" namespace. The
-    # slug rides in metadata so every agent reads/writes the right wiki.
-    flow_slug = f"flow-{flow_id}" if flow_id is not None else "default"
-
-    # Accumulate this run into the flow's research wiki (fail-open). We stream the
-    # graph and ingest each analyst signal as soon as it appears, so a run that
-    # completes some analysts but then stalls/fails later (e.g. rate limits on the
-    # PM) still captures what finished — rather than the all-or-nothing ingest that
-    # only fired after the whole graph completed. Each (agent, ticker) is ingested
-    # once via `seen`; ingest_run is idempotent per insight anyway.
-    root = flow_root(flow_slug)
+    # Each flow keeps its own research memory namespace (wiki/flow-<id>). An
+    # **unsaved** flow has no id, so there's nothing stable to scope its memory
+    # to — persisting it anywhere either (a) bleeds into other unsaved-flow
+    # runs (a shared "default" slug) or (b) leaks to the global wiki. Both
+    # break the "flows are self-contained" guarantee, so unsaved flows skip
+    # wiki persistence entirely. Once the user saves, future runs get their
+    # own slug and start accumulating memory for real.
+    flow_slug = f"flow-{flow_id}" if flow_id is not None else None
+    root = flow_root(flow_slug)  # → None for unsaved flows
     run_id = uuid.uuid4().hex[:8]
     seen_signals: set[tuple[str, str]] = set()
 
     def _ingest_new(signals: dict) -> None:
+        if root is None:
+            # Unsaved flow: drop on the floor rather than writing somewhere
+            # that would be shared with other runs.
+            return
         new: dict[str, dict] = {}
         for agent_id, per_ticker in (signals or {}).items():
             if not isinstance(per_ticker, dict):
@@ -237,7 +238,10 @@ def run_graph(
     if messages:
         decisions = parse_hedge_fund_response(messages[-1].content)
         if isinstance(decisions, dict):
-            ingest_decisions(decisions, end_date=end_date, run_id=run_id, root=root)
+            # Same isolation rule as `_ingest_new` — unsaved flows skip PM-decision
+            # persistence so they can't bleed into another run's wiki.
+            if root is not None:
+                ingest_decisions(decisions, end_date=end_date, run_id=run_id, root=root)
             # Wire PM decisions through to Alpaca PAPER orders when explicitly enabled
             # by the Trading Account node (fail-open: a problem with one order never
             # breaks the run).
