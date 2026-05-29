@@ -283,6 +283,7 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
       model_provider: primary.model_provider as any,
       strategy: buildStrategyConfig(),
       risk_manager: buildRiskManagerConfig(),
+      flow_id: currentFlowId ?? undefined,
     });
   };
 

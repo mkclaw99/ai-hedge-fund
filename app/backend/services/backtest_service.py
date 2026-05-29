@@ -32,6 +32,8 @@ class BacktestService:
         model_name: str = "gpt-4.1",
         model_provider: str = "OpenAI",
         request: dict = {},
+        flow_id: int | None = None,
+        upstream_map: dict | None = None,
     ):
         """
         Initialize the backtest service.
@@ -55,6 +57,13 @@ class BacktestService:
         self.model_name = model_name
         self.model_provider = model_provider
         self.request = request
+        # Plumb flow_id + upstream_map through to each simulated day's run so
+        # decisions are ingested into the flow's wiki — backtests were silently
+        # bypassing the memory layer (flow_id=None ⇒ run_graph skips ingest),
+        # which meant the track-record view never accumulated history from a
+        # backtest. This restores the loop: backtest → wiki → track record.
+        self.flow_id = flow_id
+        self.upstream_map = upstream_map
         self.portfolio_values = []
 
     def execute_trade(self, ticker: str, action: str, quantity: float, current_price: float) -> int:
@@ -373,6 +382,8 @@ class BacktestService:
                     model_name=self.model_name,
                     model_provider=self.model_provider,
                     request=self.request,
+                    flow_id=self.flow_id,
+                    upstream_map=self.upstream_map,
                 )
                 
                 # Parse the decisions from the graph result

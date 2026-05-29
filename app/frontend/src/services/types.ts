@@ -89,6 +89,9 @@ export interface BacktestRequest extends BaseHedgeFundRequest {
   start_date: string;
   end_date: string;
   initial_capital?: number;
+  flow_id?: number;              // Scope wiki writes to this flow → track record sees them
+  strategy?: StrategyConfig;
+  risk_manager?: RiskManagerConfig;
 }
 
 export interface BacktestDayResult {
