@@ -128,6 +128,17 @@ class BacktestResponse(BaseModel):
     final_portfolio: Dict[str, Any]
 
 
+class RiskManagerConfig(BaseModel):
+    """Configurable knobs for the volatility/correlation-based position limits.
+
+    Auto-spawned with these defaults when no Risk Manager node is on the canvas,
+    so existing flows behave identically. Drop a node in only to override.
+    """
+    limit_multiplier: float = 1.0  # coefficient on the vol×corr-adjusted limit
+    disable_correlation_penalty: bool = False  # ignore correlation in the limit calc
+    disabled: bool = False  # passthrough cash limit; let Strategy alone size positions
+
+
 class StrategyConfig(BaseModel):
     """Trading strategy declared by a Strategy node — read by the PM, partially
     enforced by the Trading Account when placing paper orders.
@@ -172,6 +183,9 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     # Strategy node config — declares trading rules (style, sizing, caps, instruments,
     # free-text mandate). Read by the PM; the Trading Account enforces max_position_pct.
     strategy: Optional[StrategyConfig] = None
+    # Risk Manager node config — overrides the hardcoded position-cap calculation.
+    # None = use defaults (= auto-spawned behaviour, identical to pre-node history).
+    risk_manager: Optional[RiskManagerConfig] = None
     # Replay-strategy mode: skip the analyst layer and pre-populate analyst_signals
     # from the flow's wiki, so the PM re-decides on cached signals with the new
     # Strategy params. The frontend sends a slimmed `graph_nodes` (just the PM) and

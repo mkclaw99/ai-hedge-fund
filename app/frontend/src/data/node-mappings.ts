@@ -137,6 +137,18 @@ const baseNodeTypeDefinitions: Record<string, NodeTypeDefinition> = {
       },
     }),
   },
+  "Risk Manager": {
+    createNode: (position: { x: number, y: number }): AppNode => ({
+      id: `risk-manager-node_${generateUniqueIdSuffix()}`,
+      type: "risk-manager-node",
+      position,
+      data: {
+        name: "Risk Manager",
+        description: "Tunes the volatility/correlation-based position caps that gate the Portfolio Manager. Auto-spawned with defaults even without this node — drop one in only to override.",
+        status: "Idle",
+      },
+    }),
+  },
 };
 
 /**

@@ -137,12 +137,26 @@ export function ResearchAreaNode({
         }
       : undefined;
 
+    // Risk Manager node (optional). When absent, the backend auto-spawns with
+    // hardcoded defaults — identical to pre-PR behaviour. Search ALL nodes
+    // (not just reachable) so this resource node doesn't need an edge.
+    const riskNode = allNodes.find((n) => n.type === 'risk-manager-node');
+    const rState = (riskNode ? getNodeInternalState(riskNode.id) : null) as any;
+    const riskManager = riskNode
+      ? {
+          limit_multiplier: numOrNull(rState?.limitMultiplier) ?? 1.0,
+          disable_correlation_penalty: !!rState?.disableCorrelationPenalty,
+          disabled: !!rState?.disabled,
+        }
+      : undefined;
+
     // Resource/input nodes don't execute in the backend graph.
     const agentNodes = allNodes.filter(
       (node) => reachable.has(node.id)
         && node.type !== 'memory-node'
         && node.type !== 'research-area-node'
         && node.type !== 'research-companies-node'
+        && node.type !== 'risk-manager-node'
         && node.type !== 'strategy-node'
         && node.type !== 'trading-account-node',
     );
@@ -188,6 +202,7 @@ export function ResearchAreaNode({
       place_paper_orders: placePaperOrders,
       starting_budget: startingBudget,
       strategy,
+      risk_manager: riskManager,
     });
   };
 

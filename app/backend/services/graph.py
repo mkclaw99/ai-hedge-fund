@@ -263,6 +263,11 @@ def run_graph(
             "strategy": (
                 request.strategy.model_dump() if request is not None and getattr(request, "strategy", None) else None
             ),
+            # Risk Manager node config (see schemas.RiskManagerConfig). When None,
+            # the risk_manager agent uses its hardcoded defaults (= pre-PR behaviour).
+            "risk_manager": (
+                request.risk_manager.model_dump() if request is not None and getattr(request, "risk_manager", None) else None
+            ),
         },
     }
 

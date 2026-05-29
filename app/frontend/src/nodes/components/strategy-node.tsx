@@ -122,6 +122,22 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
     const placePaperOrders = !!tradingState?.autoTrade;
     const startingBudget = Number(tradingState?.startingBudget ?? 0) || undefined;
 
+    // Risk Manager node — propagate to the replay run too so the new strategy
+    // is re-evaluated under the same vol/correlation caps as a full run.
+    const riskNode = allNodes.find((n) => n.type === 'risk-manager-node');
+    const rState = (riskNode ? getNodeInternalState(riskNode.id) : null) as any;
+    const parseNum = (v: any) => {
+      const x = parseFloat(v);
+      return Number.isFinite(x) ? x : undefined;
+    };
+    const riskManager = riskNode
+      ? {
+          limit_multiplier: parseNum(rState?.limitMultiplier) ?? 1.0,
+          disable_correlation_penalty: !!rState?.disableCorrelationPenalty,
+          disabled: !!rState?.disabled,
+        }
+      : undefined;
+
     // Use only the PM's model — analysts won't run, so their model picks are irrelevant.
     const allAgentModels = getAllAgentModels(flowId);
     const pmModel = allAgentModels[pmNode.id];
@@ -130,10 +146,7 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
       : [];
     const primary = primaryAgentModel(agentModels);
 
-    const numOrNull = (v: any) => {
-      const x = parseFloat(v);
-      return Number.isFinite(x) ? x : undefined;
-    };
+    const numOrNull = parseNum;
     const strategy = {
       style: style || undefined,
       sizing_rule: sizingRule || undefined,
@@ -162,6 +175,7 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
       place_paper_orders: placePaperOrders,
       starting_budget: startingBudget,
       strategy,
+      risk_manager: riskManager,
       skip_analysts: true,
     });
   };

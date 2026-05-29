@@ -98,6 +98,7 @@ export const getComponentGroups = async (): Promise<ComponentGroup[]> => {
       items: [
         { name: "Memory", icon: Database, description: "This flow's research memory. It accumulates each run; analysts read back their own prior calls and the Portfolio Manager reads everything." },
         { name: "Trading Account", icon: Wallet, description: "Your trading account — paper-trading only for now (read-only Alpaca Paper). Set the starting budget and see cash / equity / buying power." },
+        { name: "Risk Manager", icon: Database, description: "Tunes the volatility/correlation-based position caps that gate the Portfolio Manager. Auto-spawned with defaults — drop one in only to override." },
       ]
     },
   ];
