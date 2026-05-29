@@ -84,20 +84,39 @@ class FlowRepository:
         return True
     
     def duplicate_flow(self, flow_id: int, new_name: str = None) -> Optional[HedgeFundFlow]:
-        """Create a copy of an existing flow"""
+        """Create a copy of an existing flow.
+
+        Copies the **structure** (nodes, edges, viewport, description, tags) and
+        the **flow configuration** inside ``data`` (``nodeStates`` — model picks,
+        themes, tickers, dates — and ``researchRun`` — scheduling) but strips
+        ``data.nodeContextData`` (= ``agentNodeData`` + ``outputNodeData``),
+        which is the source flow's *run history*. Carrying that across made
+        duplicates display the source's last analyst messages and PM Investment
+        Report until the user re-ran them — confusing, and exactly the
+        duplicate-then-rename surprise users hit. A duplicate should keep the
+        user's settings but show a clean run state.
+        """
         original = self.get_flow_by_id(flow_id)
         if not original:
             return None
-        
+
         copy_name = new_name or f"{original.name} (Copy)"
-        
+
+        # Strip only the run-history slice; preserve every other top-level key
+        # in ``data`` (forward-compatible if new config keys land there later).
+        clean_data = None
+        if isinstance(original.data, dict):
+            clean_data = {k: v for k, v in original.data.items() if k != "nodeContextData"}
+            if not clean_data:
+                clean_data = None
+
         return self.create_flow(
             name=copy_name,
             description=original.description,
             nodes=original.nodes,
             edges=original.edges,
             viewport=original.viewport,
-            data=original.data,
+            data=clean_data,
             is_template=False,  # Copies are not templates by default
             tags=original.tags
-        ) 
+        )
