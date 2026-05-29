@@ -12,10 +12,23 @@ from src.memory import flow_root, read_back
 
 
 class PortfolioDecision(BaseModel):
-    action: Literal["buy", "sell", "short", "cover", "hold"]
-    quantity: int = Field(description="Number of shares to trade")
+    # Stock actions: buy/sell/short/cover/hold operate on the underlying ticker.
+    # Option actions (only used when the Strategy node has options enabled):
+    #   buy_call  — buy-to-open a long call    (cost: ask × 100 × qty)
+    #   buy_put   — buy-to-open a long put     (cost: ask × 100 × qty)
+    #   sell_call — sell-to-open a short call  (premium: bid × 100 × qty)
+    #   sell_put  — sell-to-open a short put   (premium: bid × 100 × qty)
+    # For option actions, `quantity` is the number of contracts (each = 100 shares
+    # of underlying exposure) and `option_contract` is the OCC symbol picked from
+    # the ## Derivatives block in the prompt.
+    action: Literal["buy", "sell", "short", "cover", "hold", "buy_call", "buy_put", "sell_call", "sell_put"]
+    quantity: int = Field(description="Number of shares (stock) or contracts (options) to trade")
     confidence: int = Field(description="Confidence 0-100")
     reasoning: str = Field(description="Reasoning for the decision")
+    option_contract: str | None = Field(
+        default=None,
+        description="OCC contract symbol picked from the ## Derivatives block. Required for option actions, ignored for stock actions.",
+    )
 
 
 class PortfolioManagerOutput(BaseModel):
@@ -230,6 +243,22 @@ def generate_trading_decision(
     # data problem renders a one-line "no derivatives" note.
     derivatives_block = _render_derivatives_block(strategy, tickers_for_llm, state)
 
+    # Add option actions to every ticker's allowed set when Strategy permits
+    # options. Each contract = 100 shares of underlying exposure; cap qty at a
+    # conservative 5 contracts per opening trade (PM is free to ask for fewer).
+    # We don't pre-filter for "optionable" here — the PM picks an OCC from the
+    # ## Derivatives block, and a non-optionable ticker simply has no symbols
+    # there to pick, so the PM won't emit an option action for it.
+    options_enabled = bool(isinstance(strategy, dict) and strategy.get("allow_options"))
+    if options_enabled:
+        for t in tickers_for_llm:
+            allowed_actions_full.setdefault(t, {"hold": 0})
+            for opt_action in ("buy_call", "buy_put", "sell_call", "sell_put"):
+                allowed_actions_full[t][opt_action] = 5
+
+    # Refresh the compact view after option enrichment.
+    compact_allowed = {t: allowed_actions_full[t] for t in tickers_for_llm if t in allowed_actions_full}
+
     # Minimal prompt template — now with Strategy + Derivatives slots.
     template = ChatPromptTemplate.from_messages(
         [
@@ -240,10 +269,15 @@ def generate_trading_decision(
                 "You may also receive prior accumulated research from earlier runs as background — "
                 "weigh it, but the current signals take precedence.\n"
                 "If a `## Strategy Mandate` block is present, follow it: it sets your trading style, "
-                "sizing rule, caps, holding period, and which instruments you may consider. "
-                "If a `## Derivatives` block is present (options enabled), you may reason about "
-                "option-based positions, but **only place stock orders for now** (option order routing "
-                "is not yet wired). Use derivative info as context — e.g. high IV suggests selling vol.\n"
+                "sizing rule, caps, holding period, and which instruments you may consider.\n"
+                "If a `## Derivatives` block is present (options enabled), you may also place OPTION "
+                "orders on the underlying tickers:\n"
+                "  • `buy_call` / `buy_put` — buy-to-open (cost ≈ ask × 100 × qty).\n"
+                "  • `sell_call` / `sell_put` — sell-to-open (collect bid × 100 × qty).\n"
+                "For option actions, `quantity` is **contracts** (each = 100 shares of underlying) "
+                "and `option_contract` MUST be set to one of the OCC symbols shown in the Derivatives "
+                "block for that ticker (e.g. \"AVAV260529C00205000\"). Do not invent OCC symbols — "
+                "pick from what's shown. For stock actions, leave `option_contract` null.\n"
                 "Pick one allowed action per ticker and a quantity ≤ the max. "
                 "Keep reasoning very concise (max 100 chars). No cash or margin math. Return JSON only."
             ),
@@ -256,7 +290,7 @@ def generate_trading_decision(
                 "Format:\n"
                 "{{\n"
                 '  "decisions": {{\n'
-                '    "TICKER": {{"action":"...","quantity":int,"confidence":int,"reasoning":"..."}}\n'
+                '    "TICKER": {{"action":"...","quantity":int,"confidence":int,"reasoning":"...","option_contract":null}}\n'
                 "  }}\n"
                 "}}"
             ),

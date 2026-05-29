@@ -124,6 +124,64 @@ def place_order(api_keys: dict | None, *, symbol: str, side: str, qty) -> dict:
         return {**out, "ok": False, "error": str(e)[:200]}
 
 
+def place_option_order(api_keys: dict | None, *, symbol_occ: str, side: str, qty) -> dict:
+    """Submit a *market, day* option order on the PAPER account.
+
+    ``symbol_occ`` is the OCC contract symbol from a Derivatives summary (e.g.
+    ``AVAV260529C00205000``). Alpaca's options API uses the same ``/v2/orders``
+    endpoint as stocks; the contract identity rides on the ``symbol`` field.
+
+    ``side`` is ``"buy"`` (buy-to-open a long contract) or ``"sell"`` (sell-to-open
+    a short contract). Closing trades are a follow-up — this v1 only opens.
+
+    Returns ``{ok, symbol, side, qty, id?, status?, error?}``. Fail-open: invalid
+    input or any Alpaca error (including missing options permission level on the
+    paper account) returns ``ok=False`` with a human-readable error string. All
+    paths remain inside the hard-coded paper host.
+    """
+    out = {
+        "symbol": str(symbol_occ or "").upper(),
+        "side": str(side or "").lower(),
+        "qty": qty,
+        "is_option": True,
+    }
+    h = _headers(api_keys)
+    if not h:
+        return {**out, "ok": False, "error": "no paper credentials"}
+    if out["side"] not in ("buy", "sell"):
+        return {**out, "ok": False, "error": f"invalid side: {side}"}
+    if not out["symbol"]:
+        return {**out, "ok": False, "error": "empty OCC symbol"}
+    try:
+        qty_int = int(float(qty))
+    except (TypeError, ValueError):
+        return {**out, "ok": False, "error": f"invalid qty: {qty}"}
+    if qty_int <= 0:
+        return {**out, "ok": False, "error": "qty must be > 0 contracts"}
+    body = {
+        "symbol": out["symbol"],
+        "qty": str(qty_int),
+        "side": out["side"],
+        "type": "market",
+        "time_in_force": "day",
+    }
+    try:
+        r = requests.post(f"{_PAPER_BASE}/orders", headers=h, json=body, timeout=15)
+        if r.status_code in (200, 201):
+            o = r.json() or {}
+            return {**out, "ok": True, "id": o.get("id"), "status": o.get("status"), "qty": o.get("qty") or qty_int}
+        try:
+            msg = (r.json() or {}).get("message") or r.text
+        except Exception:
+            msg = r.text
+        # Friendlier error for the most common rejection reason.
+        if r.status_code == 403 and "option" in (msg or "").lower():
+            msg = (msg or "") + " — your paper account may not be options-enabled. Set the level on Alpaca's dashboard."
+        return {**out, "ok": False, "error": f"Alpaca {r.status_code}: {(msg or '')[:240]}"}
+    except Exception as e:
+        return {**out, "ok": False, "error": str(e)[:240]}
+
+
 def get_latest_prices(api_keys: dict | None, tickers) -> dict:
     """Batch-fetch the latest trade price for each ticker. Returns ``{symbol: price}``
     for symbols Alpaca returned a trade for; others are simply omitted (caller
