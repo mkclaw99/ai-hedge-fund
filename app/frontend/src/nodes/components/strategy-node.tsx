@@ -1,5 +1,5 @@
 import { useReactFlow, type NodeProps } from '@xyflow/react';
-import { Loader2, Play, Square, Target } from 'lucide-react';
+import { History, Loader2, Play, Square, Target } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -83,12 +83,29 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
   // resolve). Only enabled when there's prior memory to replay.
   const { currentFlowId } = useFlowContext();
   const { getAllAgentModels } = useNodeContext();
-  const { getNodes } = useReactFlow();
+  const { getNodes, getEdges } = useReactFlow();
   const { setBottomPanelTab, expandBottomPanel } = useLayoutContext();
   const flowId = currentFlowId?.toString() || null;
-  const { canRun, isProcessing, runFlow, stopFlow } = useFlowConnection(flowId);
+  const { canRun, isProcessing, runFlow, runBacktest, stopFlow } = useFlowConnection(flowId);
   const [memoryTickers, setMemoryTickers] = useState<string[]>([]);
   const [replayError, setReplayError] = useState<string | null>(null);
+
+  // Backtest controls — replay the strategy day-by-day over a historical window
+  // through the full graph (analysts re-evaluate each day). Defaults: last 30
+  // trading days; user can shrink/grow before running. Saved per-node so the
+  // window survives reloads via the existing useNodeState persistence.
+  const today = new Date().toISOString().slice(0, 10);
+  const thirtyAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+  const [backtestStartDate, setBacktestStartDate] = useNodeState<string>(id, 'backtestStartDate', thirtyAgo);
+  const [backtestEndDate, setBacktestEndDate] = useNodeState<string>(id, 'backtestEndDate', today);
+  const [backtestError, setBacktestError] = useState<string | null>(null);
+
+  // Parse a numeric-ish string into a float; non-finite values collapse to
+  // undefined so they don't override Pydantic defaults on the backend.
+  const parseNum = (v: any): number | undefined => {
+    const x = parseFloat(v);
+    return Number.isFinite(x) ? x : undefined;
+  };
 
   // Refresh cached-ticker list when this flow comes into focus or when a
   // run finishes (`isProcessing` going false). Cheap call (one fetch).
@@ -128,21 +145,8 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
     const placePaperOrders = !!tradingState?.autoTrade;
     const startingBudget = Number(tradingState?.startingBudget ?? 0) || undefined;
 
-    // Risk Manager node — propagate to the replay run too so the new strategy
-    // is re-evaluated under the same vol/correlation caps as a full run.
-    const riskNode = allNodes.find((n) => n.type === 'risk-manager-node');
-    const rState = (riskNode ? getNodeInternalState(riskNode.id) : null) as any;
-    const parseNum = (v: any) => {
-      const x = parseFloat(v);
-      return Number.isFinite(x) ? x : undefined;
-    };
-    const riskManager = riskNode
-      ? {
-          limit_multiplier: parseNum(rState?.limitMultiplier) ?? 1.0,
-          disable_correlation_penalty: !!rState?.disableCorrelationPenalty,
-          disabled: !!rState?.disabled,
-        }
-      : undefined;
+    // Risk Manager + Strategy configs — shared with the Backtest path.
+    const riskManager = buildRiskManagerConfig();
 
     // Use only the PM's model — analysts won't run, so their model picks are irrelevant.
     const allAgentModels = getAllAgentModels(flowId);
@@ -152,20 +156,7 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
       : [];
     const primary = primaryAgentModel(agentModels);
 
-    const numOrNull = parseNum;
-    const strategy = {
-      style: style || undefined,
-      sizing_rule: sizingRule || undefined,
-      max_position_pct: numOrNull(maxPositionPct),
-      max_sector_pct: numOrNull(maxSectorPct),
-      holding_period: holdingPeriod || undefined,
-      stop_loss_pct: numOrNull(stopLossPct),
-      take_profit_pct: numOrNull(takeProfitPct),
-      allow_stocks: allowStocks !== false,
-      allow_options: !!allowOptions,
-      allow_etfs: !!allowEtfs,
-      note: note || undefined,
-    };
+    const strategy = buildStrategyConfig();
 
     expandBottomPanel();
     setBottomPanelTab('output');
@@ -183,6 +174,113 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
       strategy,
       risk_manager: riskManager,
       skip_analysts: true,
+    });
+  };
+
+  // Build the StrategyConfig from the current node state — shared by Replay
+  // and Backtest. Avoids two slightly-divergent copies.
+  const buildStrategyConfig = () => ({
+    style: style || undefined,
+    sizing_rule: sizingRule || undefined,
+    max_position_pct: parseNum(maxPositionPct),
+    max_sector_pct: parseNum(maxSectorPct),
+    holding_period: holdingPeriod || undefined,
+    stop_loss_pct: parseNum(stopLossPct),
+    take_profit_pct: parseNum(takeProfitPct),
+    allow_stocks: allowStocks !== false,
+    allow_options: !!allowOptions,
+    allow_etfs: !!allowEtfs,
+    note: note || undefined,
+  });
+
+  // Read the optional Risk Manager node's config from the canvas. None on the
+  // canvas → undefined → backend uses defaults (= pre-PR behaviour).
+  const buildRiskManagerConfig = () => {
+    const allNodes = getNodes();
+    const node = allNodes.find((n) => n.type === 'risk-manager-node');
+    if (!node) return undefined;
+    const s = getNodeInternalState(node.id) as any;
+    return {
+      limit_multiplier: parseNum(s?.limitMultiplier) ?? 1.0,
+      disable_correlation_penalty: !!s?.disableCorrelationPenalty,
+      disabled: !!s?.disabled,
+    };
+  };
+
+  const handleBacktest = () => {
+    setBacktestError(null);
+    if (!backtestStartDate || !backtestEndDate) {
+      setBacktestError('Pick a start and end date.');
+      return;
+    }
+    if (backtestStartDate >= backtestEndDate) {
+      setBacktestError('Start date must be before end date.');
+      return;
+    }
+    if (memoryTickers.length === 0) {
+      setBacktestError('No cached tickers — run the full flow once first.');
+      return;
+    }
+    const allNodes = getNodes();
+    // Backtest needs the FULL graph (analysts re-evaluate each day on that
+    // day's data — Replay's "PM-only + cached signals" would defeat the
+    // purpose). Take every non-resource agent node on the canvas.
+    const agentNodes = allNodes.filter(
+      (n) =>
+        n.type !== 'memory-node' &&
+        n.type !== 'research-area-node' &&
+        n.type !== 'research-companies-node' &&
+        n.type !== 'risk-manager-node' &&
+        n.type !== 'strategy-node' &&
+        n.type !== 'trading-account-node' &&
+        n.type !== 'stock-analyzer-node' &&
+        n.type !== 'portfolio-start-node',
+    );
+    if (!agentNodes.some((n) => n.type === 'portfolio-manager-node')) {
+      setBacktestError('No Portfolio Manager in the flow.');
+      return;
+    }
+    const days = Math.max(
+      1,
+      Math.round((Date.parse(backtestEndDate) - Date.parse(backtestStartDate)) / 86_400_000),
+    );
+    const ok = window.confirm(
+      `Backtest from ${backtestStartDate} → ${backtestEndDate} (${days} day${days === 1 ? '' : 's'}) ` +
+        `on ${memoryTickers.length} ticker${memoryTickers.length === 1 ? '' : 's'} via the full graph.\n\n` +
+        `Each day re-runs every analyst + the PM. Expect several minutes per day. ` +
+        `LLM-cache hits will reduce cost but not zero it.\n\nContinue?`,
+    );
+    if (!ok) return;
+
+    const allAgentModels = getAllAgentModels(flowId);
+    const agentModels = agentNodes
+      .map((n) => {
+        const m = allAgentModels[n.id];
+        return m ? { agent_id: n.id, model_name: m.model_name, model_provider: m.provider as any } : null;
+      })
+      .filter((m): m is { agent_id: string; model_name: string; model_provider: any } => m !== null);
+    const primary = primaryAgentModel(agentModels);
+
+    const ids = new Set(agentNodes.map((n) => n.id));
+    const allEdges = getEdges();
+    const graph_edges = allEdges.filter((e) => ids.has(e.source) && ids.has(e.target));
+
+    expandBottomPanel();
+    setBottomPanelTab('output');
+
+    runBacktest({
+      tickers: memoryTickers,
+      graph_nodes: agentNodes.map((n) => ({ id: n.id, type: n.type, data: n.data, position: n.position })),
+      graph_edges,
+      agent_models: agentModels,
+      start_date: backtestStartDate,
+      end_date: backtestEndDate,
+      initial_capital: 100000,
+      margin_requirement: 0,
+      model_name: primary.model_name,
+      model_provider: primary.model_provider as any,
+      strategy: buildStrategyConfig(),
+      risk_manager: buildRiskManagerConfig(),
     });
   };
 
@@ -274,6 +372,67 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
                 </Tooltip>
                 {replayError && (
                   <div className="text-xs text-red-500">{replayError}</div>
+                )}
+              </div>
+
+              {/* Backtest — replay the whole graph day-by-day over a date window
+                  so you can measure the strategy against history. Defaults to
+                  the last 30 days. Each day re-runs every analyst + the PM, so
+                  this is expensive in time + tokens; a confirm dialog gates it. */}
+              <div className="flex flex-col gap-2">
+                <div className="text-subtitle text-primary">Backtest</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Tooltip delayDuration={200}>
+                    <TooltipTrigger asChild>
+                      <input
+                        type="date"
+                        aria-label="Backtest start date"
+                        className="nodrag h-9 w-full rounded-md border border-border bg-node px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        value={backtestStartDate}
+                        max={backtestEndDate}
+                        onChange={(e) => setBacktestStartDate(e.target.value)}
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">From (start of the simulated period)</TooltipContent>
+                  </Tooltip>
+                  <Tooltip delayDuration={200}>
+                    <TooltipTrigger asChild>
+                      <input
+                        type="date"
+                        aria-label="Backtest end date"
+                        className="nodrag h-9 w-full rounded-md border border-border bg-node px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        value={backtestEndDate}
+                        min={backtestStartDate}
+                        max={today}
+                        onChange={(e) => setBacktestEndDate(e.target.value)}
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">To (end of the simulated period)</TooltipContent>
+                  </Tooltip>
+                </div>
+                <Tooltip delayDuration={200}>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={!canRun || isProcessing || noMemory}
+                      onClick={handleBacktest}
+                      className="nodrag w-full justify-center gap-2"
+                      aria-label="Backtest the strategy on the cached ticker universe"
+                    >
+                      <History className="h-3.5 w-3.5" />
+                      Backtest strategy
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-xs">
+                    {noMemory
+                      ? 'Run the full flow at least once first — backtest replays history on the cached universe.'
+                      : `Replay every day from ${backtestStartDate} to ${backtestEndDate} through the full graph using these strategy params. Expensive — confirm before running.`}
+                  </TooltipContent>
+                </Tooltip>
+                {backtestError && (
+                  <div className="text-xs text-red-500">{backtestError}</div>
                 )}
               </div>
 
