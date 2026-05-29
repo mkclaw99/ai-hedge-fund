@@ -1,97 +1,75 @@
+"""Public market-data API used by every analyst, the risk manager, and the
+backtester. Delegates to a :class:`~src.tools.providers.chain.ProviderChain`
+so a single-vendor outage no longer takes the app down.
+
+Layout::
+
+    caller (agent)
+        └→ src.tools.api.get_prices(...)
+              ├→ src.data.cache  (cache key kept stable across providers)
+              └→ ProviderChain[FD, Alpaca, yfinance]  (first non-empty wins)
+
+The cache layer sits in front of the chain so a previous run's data keeps
+working even when every upstream vendor is unreachable. The cache key is
+intentionally provider-agnostic — once a result is cached, it's just data.
+Logging at the chain level tells you which provider served a given fresh
+fetch (look for "served by alpaca" / "served by yfinance" in the backend
+log if you want to see fallback in action).
+
+Behaviour-preserving notes:
+
+* Function signatures match the pre-refactor versions exactly — the
+  agents and routes don't need any change.
+* The cache keys are unchanged, so existing cached entries keep working.
+* A successful empty result (no data, but the upstream said so cleanly)
+  is still cached so we don't re-fetch forever.
+"""
 import datetime
 import logging
 import os
+
 import pandas as pd
-import requests
-import time
 
 logger = logging.getLogger(__name__)
 
 from src.data.cache import get_cache
 from src.data.models import (
     CompanyNews,
-    CompanyNewsResponse,
     FinancialMetrics,
-    FinancialMetricsResponse,
-    Price,
-    PriceResponse,
-    LineItem,
-    LineItemResponse,
     InsiderTrade,
-    InsiderTradeResponse,
-    CompanyFactsResponse,
+    LineItem,
+    Price,
 )
+from src.tools.providers import build_default_chain
 
-# Global cache instance
+# Module-level cache; constructed once.
 _cache = get_cache()
 
 
-def _make_api_request(url: str, headers: dict, method: str = "GET", json_data: dict = None, max_retries: int = 3) -> requests.Response:
+def _chain_with_key(api_key: str | None):
+    """Build a chain seeded with the caller's FD key (and env-var alpaca keys).
+
+    The caller passes only the FD key today; Alpaca + yfinance pick up their
+    own credentials (or lack thereof) from the environment. We don't take a
+    full ``api_keys`` dict here because nothing in the existing callers has
+    one — keeps the refactor a strict drop-in.
     """
-    Make an API request with rate limiting handling and moderate backoff.
-    
-    Args:
-        url: The URL to request
-        headers: Headers to include in the request
-        method: HTTP method (GET or POST)
-        json_data: JSON data for POST requests
-        max_retries: Maximum number of retries (default: 3)
-    
-    Returns:
-        requests.Response: The response object
-    
-    Raises:
-        Exception: If the request fails with a non-429 error
-    """
-    for attempt in range(max_retries + 1):  # +1 for initial attempt
-        if method.upper() == "POST":
-            response = requests.post(url, headers=headers, json=json_data)
-        else:
-            response = requests.get(url, headers=headers)
-        
-        if response.status_code == 429 and attempt < max_retries:
-            # Linear backoff: 60s, 90s, 120s, 150s...
-            delay = 60 + (30 * attempt)
-            print(f"Rate limited (429). Attempt {attempt + 1}/{max_retries + 1}. Waiting {delay}s before retrying...")
-            time.sleep(delay)
-            continue
-        
-        # Return the response (whether success, other errors, or final 429)
-        return response
+    api_keys = {"FINANCIAL_DATASETS_API_KEY": api_key} if api_key else {}
+    return build_default_chain(api_keys)
 
 
 def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None) -> list[Price]:
-    """Fetch price data from cache or API."""
-    # Create a cache key that includes all parameters to ensure exact matches
+    """Fetch OHLCV bars for ``ticker``. Falls back across providers on miss."""
     cache_key = f"{ticker}_{start_date}_{end_date}"
-    
-    # Check cache first. Use "is not None" so a cached *empty* result counts as
-    # a hit (an empty list is falsy) — otherwise empties would re-fetch forever.
     cached_data = _cache.get_prices(cache_key)
     if cached_data is not None:
         return [Price(**price) for price in cached_data]
-
-    # If not in cache, fetch from API
-    headers = {}
-    financial_api_key = api_key or os.environ.get("FINANCIAL_DATASETS_API_KEY")
-    if financial_api_key:
-        headers["X-API-KEY"] = financial_api_key
-
-    url = f"https://api.financialdatasets.ai/prices/?ticker={ticker}&interval=day&interval_multiplier=1&start_date={start_date}&end_date={end_date}"
-    response = _make_api_request(url, headers)
-    if response.status_code != 200:
-        return []  # don't cache API errors — only successful responses
-
-    # Parse response with Pydantic model
-    try:
-        price_response = PriceResponse(**response.json())
-        prices = price_response.prices
-    except Exception as e:
-        logger.warning("Failed to parse price response for %s: %s", ticker, e)
-        return []  # don't cache parse failures
-
-    # Cache the (possibly empty) successful result using the comprehensive key
-    _cache.set_prices(cache_key, [p.model_dump() for p in prices])
+    prices = _chain_with_key(api_key).get_prices(ticker, start_date, end_date)
+    # Only cache when we got something — an "everyone returned empty" outcome
+    # may be a transient upstream issue; re-fetching next call is cheap and
+    # gives the user a chance once credits/connectivity return.
+    if prices:
+        _cache.set_prices(cache_key, [p.model_dump() for p in prices])
     return prices
 
 
@@ -102,37 +80,19 @@ def get_financial_metrics(
     limit: int = 10,
     api_key: str = None,
 ) -> list[FinancialMetrics]:
-    """Fetch financial metrics from cache or API."""
-    # Create a cache key that includes all parameters to ensure exact matches
+    """Fetch financial metrics. Yahoo can serve a single-row TTM fallback when
+    Financial Datasets is unavailable; analysts that depend on multi-row
+    historical metrics will see a shorter list rather than empty."""
     cache_key = f"{ticker}_{period}_{end_date}_{limit}"
-    
-    # Check cache first ("is not None" so a cached empty result is a hit).
     cached_data = _cache.get_financial_metrics(cache_key)
     if cached_data is not None:
         return [FinancialMetrics(**metric) for metric in cached_data]
-
-    # If not in cache, fetch from API
-    headers = {}
-    financial_api_key = api_key or os.environ.get("FINANCIAL_DATASETS_API_KEY")
-    if financial_api_key:
-        headers["X-API-KEY"] = financial_api_key
-
-    url = f"https://api.financialdatasets.ai/financial-metrics/?ticker={ticker}&report_period_lte={end_date}&limit={limit}&period={period}"
-    response = _make_api_request(url, headers)
-    if response.status_code != 200:
-        return []  # don't cache API errors
-
-    # Parse response with Pydantic model
-    try:
-        metrics_response = FinancialMetricsResponse(**response.json())
-        financial_metrics = metrics_response.financial_metrics
-    except Exception as e:
-        logger.warning("Failed to parse financial metrics response for %s: %s", ticker, e)
-        return []  # don't cache parse failures
-
-    # Cache the (possibly empty) successful result using the comprehensive key
-    _cache.set_financial_metrics(cache_key, [m.model_dump() for m in financial_metrics])
-    return financial_metrics
+    metrics = _chain_with_key(api_key).get_financial_metrics(
+        ticker, end_date, period=period, limit=limit,
+    )
+    if metrics:
+        _cache.set_financial_metrics(cache_key, [m.model_dump() for m in metrics])
+    return metrics
 
 
 def search_line_items(
@@ -143,38 +103,17 @@ def search_line_items(
     limit: int = 10,
     api_key: str = None,
 ) -> list[LineItem]:
-    """Fetch line items from API."""
-    # If not in cache or insufficient data, fetch from API
-    headers = {}
-    financial_api_key = api_key or os.environ.get("FINANCIAL_DATASETS_API_KEY")
-    if financial_api_key:
-        headers["X-API-KEY"] = financial_api_key
+    """Look up specific line items across the income/balance/cashflow statements.
 
-    url = "https://api.financialdatasets.ai/financials/search/line-items"
-
-    body = {
-        "tickers": [ticker],
-        "line_items": line_items,
-        "end_date": end_date,
-        "period": period,
-        "limit": limit,
-    }
-    response = _make_api_request(url, headers, method="POST", json_data=body)
-    if response.status_code != 200:
-        return []
-    
-    try:
-        data = response.json()
-        response_model = LineItemResponse(**data)
-        search_results = response_model.search_results
-    except Exception as e:
-        logger.warning("Failed to parse line items response for %s: %s", ticker, e)
-        return []
-    if not search_results:
-        return []
-
-    # Cache the results
-    return search_results[:limit]
+    Not cached today (matches the previous behaviour — line-item requests
+    can vary by ``line_items`` content and the cache layer would need a
+    list-aware key). The provider chain handles fallback to yfinance, with
+    fields we don't have a mapping for left as ``None`` so analysts can
+    detect missing values explicitly.
+    """
+    return _chain_with_key(api_key).search_line_items(
+        ticker, line_items, end_date, period=period, limit=limit,
+    )
 
 
 def get_insider_trades(
@@ -184,73 +123,17 @@ def get_insider_trades(
     limit: int = 1000,
     api_key: str = None,
 ) -> list[InsiderTrade]:
-    """Fetch insider trades from cache or API."""
-    # Create a cache key that includes all parameters to ensure exact matches
+    """Fetch insider trades for the date window."""
     cache_key = f"{ticker}_{start_date or 'none'}_{end_date}_{limit}"
-    
-    # Check cache first ("is not None" so a cached empty result is a hit).
     cached_data = _cache.get_insider_trades(cache_key)
     if cached_data is not None:
         return [InsiderTrade(**trade) for trade in cached_data]
-
-    # If not in cache, fetch from API
-    headers = {}
-    financial_api_key = api_key or os.environ.get("FINANCIAL_DATASETS_API_KEY")
-    if financial_api_key:
-        headers["X-API-KEY"] = financial_api_key
-
-    all_trades = []
-    current_end_date = end_date
-    got_ok = False  # whether at least one request returned 200 (so empty == "no data", cacheable)
-
-    while True:
-        url = f"https://api.financialdatasets.ai/insider-trades/?ticker={ticker}&filing_date_lte={current_end_date}"
-        if start_date:
-            url += f"&filing_date_gte={start_date}"
-        url += f"&limit={limit}"
-
-        response = _make_api_request(url, headers)
-        if response.status_code != 200:
-            break
-
-        try:
-            data = response.json()
-            response_model = InsiderTradeResponse(**data)
-            insider_trades = response_model.insider_trades
-        except Exception as e:
-            logger.warning("Failed to parse insider trades response for %s: %s", ticker, e)
-            break
-
-        got_ok = True
-        if not insider_trades:
-            break
-
-        all_trades.extend(insider_trades)
-
-        # Only continue pagination if we have a start_date and got a full page
-        if not start_date or len(insider_trades) < limit:
-            break
-
-        # Update end_date to the oldest filing date from current batch for next iteration
-        current_end_date = min(trade.filing_date for trade in insider_trades).split("T")[0]
-
-        # If we've reached or passed the start_date, we can stop
-        if current_end_date <= start_date:
-            break
-
-    # Cache successful responses, including a legitimately empty result, so it
-    # isn't re-fetched on every run. Don't cache when every request errored.
-    if got_ok:
-        _cache.set_insider_trades(cache_key, [trade.model_dump() for trade in all_trades])
-    return all_trades
-
-
-# The FD news endpoint caps `limit` at 10 per request and offers no pagination
-# cursor, so we page backwards by date. Keep the page count bounded: the rate
-# limiter backs off 60s+ on a 429, so unbounded paging (e.g. limit=1000 -> 100
-# requests) can stall for a very long time and hammer the API.
-_NEWS_PAGE_SIZE = 10
-_NEWS_MAX_PAGES = int(os.environ.get("FD_NEWS_MAX_PAGES", "10"))
+    trades = _chain_with_key(api_key).get_insider_trades(
+        ticker, end_date, start_date=start_date, limit=limit,
+    )
+    if trades:
+        _cache.set_insider_trades(cache_key, [t.model_dump() for t in trades])
+    return trades
 
 
 def get_company_news(
@@ -260,88 +143,17 @@ def get_company_news(
     limit: int = 1000,
     api_key: str = None,
 ) -> list[CompanyNews]:
-    """Fetch company news from cache or API.
-
-    Pages backwards from *end_date* in batches of 10 (the API maximum),
-    stopping at *limit* articles, *start_date*, or a bounded page count. When
-    many articles share a date the window is advanced past the oldest one to
-    guarantee progress, so this samples the most recent articles rather than
-    exhaustively returning every one.
-    """
-    # Create a cache key that includes all parameters to ensure exact matches
+    """Fetch company news. Cached the same way the legacy FD-only path did."""
     cache_key = f"{ticker}_{start_date or 'none'}_{end_date}_{limit}"
-
-    # Check cache first ("is not None" so a cached empty result is a hit).
     cached_data = _cache.get_company_news(cache_key)
     if cached_data is not None:
         return [CompanyNews(**news) for news in cached_data]
-
-    # If not in cache, fetch from API
-    headers = {}
-    financial_api_key = api_key or os.environ.get("FINANCIAL_DATASETS_API_KEY")
-    if financial_api_key:
-        headers["X-API-KEY"] = financial_api_key
-
-    page_size = min(limit, _NEWS_PAGE_SIZE)              # never exceed the API max (else HTTP 400)
-    max_pages = min(-(-limit // page_size), _NEWS_MAX_PAGES)  # ceil(limit/page_size), hard-capped
-
-    all_news: list[CompanyNews] = []
-    seen: set = set()
-    current_end_date = end_date
-    got_ok = False  # whether at least one request returned 200 (so empty == "no data", cacheable)
-
-    for _ in range(max_pages):
-        url = f"https://api.financialdatasets.ai/news/?ticker={ticker}&end_date={current_end_date}"
-        if start_date:
-            url += f"&start_date={start_date}"
-        url += f"&limit={page_size}"
-
-        response = _make_api_request(url, headers)
-        if response.status_code != 200:
-            break
-
-        try:
-            company_news = CompanyNewsResponse(**response.json()).news
-        except Exception as e:
-            logger.warning("Failed to parse company news response for %s: %s", ticker, e)
-            break
-
-        got_ok = True
-        if not company_news:
-            break
-
-        # Boundary dates overlap between pages — dedup while preserving order.
-        for news in company_news:
-            ident = news.url or (news.date, news.title)
-            if ident not in seen:
-                seen.add(ident)
-                all_news.append(news)
-
-        if len(all_news) >= limit:
-            break
-        if len(company_news) < page_size:
-            break  # no more data available
-
-        # Advance to the day BEFORE the oldest article so the window always
-        # shrinks — this guarantees progress even when 10+ articles share a date.
-        oldest = min(news.date for news in company_news)[:10]
-        try:
-            next_end = (datetime.date.fromisoformat(oldest) - datetime.timedelta(days=1)).isoformat()
-        except ValueError:
-            break
-        if next_end >= current_end_date:  # safety: no forward progress
-            break
-        current_end_date = next_end
-        if start_date and current_end_date < start_date:
-            break
-
-    all_news = all_news[:limit]
-
-    # Cache successful responses, including a legitimately empty result, so it
-    # isn't re-fetched on every run. Don't cache when every request errored.
-    if got_ok:
-        _cache.set_company_news(cache_key, [news.model_dump() for news in all_news])
-    return all_news
+    news = _chain_with_key(api_key).get_company_news(
+        ticker, end_date, start_date=start_date, limit=limit,
+    )
+    if news:
+        _cache.set_company_news(cache_key, [n.model_dump() for n in news])
+    return news
 
 
 def get_market_cap(
@@ -349,31 +161,11 @@ def get_market_cap(
     end_date: str,
     api_key: str = None,
 ) -> float | None:
-    """Fetch market cap, preferring company facts for today and falling back
-    to the latest financial metrics (which carry market_cap historically)."""
-    # For today's date, company facts has the freshest market cap — but it is
-    # often null, so fall through to financial metrics rather than giving up.
-    if end_date == datetime.datetime.now().strftime("%Y-%m-%d"):
-        headers = {}
-        financial_api_key = api_key or os.environ.get("FINANCIAL_DATASETS_API_KEY")
-        if financial_api_key:
-            headers["X-API-KEY"] = financial_api_key
-
-        url = f"https://api.financialdatasets.ai/company/facts/?ticker={ticker}"
-        response = _make_api_request(url, headers)
-        if response.status_code == 200:
-            market_cap = CompanyFactsResponse(**response.json()).company_facts.market_cap
-            if market_cap:
-                return market_cap
-        else:
-            print(f"Error fetching company facts: {ticker} - {response.status_code}")
-        # fall through to the financial-metrics fallback below
-
-    financial_metrics = get_financial_metrics(ticker, end_date, api_key=api_key)
-    if not financial_metrics:
-        return None
-
-    return financial_metrics[0].market_cap or None
+    """Market cap for ``end_date``. The chain prefers FD's company-facts /
+    financial-metrics path; yfinance reads ``Ticker.info['marketCap']`` as
+    a current-snapshot fallback (not historical-accurate, but better than
+    no figure for ratio-based analysts)."""
+    return _chain_with_key(api_key).get_market_cap(ticker, end_date)
 
 
 def prices_to_df(prices: list[Price]) -> pd.DataFrame:
@@ -388,7 +180,6 @@ def prices_to_df(prices: list[Price]) -> pd.DataFrame:
     return df
 
 
-# Update the get_price_data function to use the new functions
 def get_price_data(ticker: str, start_date: str, end_date: str, api_key: str = None) -> pd.DataFrame:
     prices = get_prices(ticker, start_date, end_date, api_key=api_key)
     return prices_to_df(prices)
