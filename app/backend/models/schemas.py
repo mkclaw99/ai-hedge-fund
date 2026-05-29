@@ -91,10 +91,44 @@ class BaseHedgeFundRequest(BaseModel):
         return self.model_name, self.model_provider
 
 
+class RiskManagerConfig(BaseModel):
+    """Configurable knobs for the volatility/correlation-based position limits.
+
+    Auto-spawned with these defaults when no Risk Manager node is on the canvas,
+    so existing flows behave identically. Drop a node in only to override.
+    """
+    limit_multiplier: float = 1.0
+    disable_correlation_penalty: bool = False
+    disabled: bool = False
+
+
+class StrategyConfig(BaseModel):
+    """Trading strategy declared by a Strategy node — read by the PM, partially
+    enforced by the Trading Account when placing paper orders."""
+    style: Optional[str] = None
+    sizing_rule: Optional[str] = None
+    max_position_pct: Optional[float] = None
+    max_sector_pct: Optional[float] = None
+    holding_period: Optional[str] = None
+    stop_loss_pct: Optional[float] = None
+    take_profit_pct: Optional[float] = None
+    allow_stocks: bool = True
+    allow_options: bool = False
+    allow_etfs: bool = False
+    note: Optional[str] = None
+
+
 class BacktestRequest(BaseHedgeFundRequest):
     start_date: str
     end_date: str
     initial_capital: float = 100000.0
+    # Scope wiki writes per day to this flow's memory so the track-record view
+    # picks up the simulated decisions. Without this, backtest runs are invisible
+    # to the learning loop. Unset → no per-flow wiki write.
+    flow_id: Optional[int] = None
+    # Strategy/Risk Manager configs ride through the same way as /run.
+    strategy: Optional[StrategyConfig] = None
+    risk_manager: Optional[RiskManagerConfig] = None
 
 
 class BacktestDayResult(BaseModel):
@@ -126,37 +160,6 @@ class BacktestResponse(BaseModel):
     results: List[BacktestDayResult]
     performance_metrics: BacktestPerformanceMetrics
     final_portfolio: Dict[str, Any]
-
-
-class RiskManagerConfig(BaseModel):
-    """Configurable knobs for the volatility/correlation-based position limits.
-
-    Auto-spawned with these defaults when no Risk Manager node is on the canvas,
-    so existing flows behave identically. Drop a node in only to override.
-    """
-    limit_multiplier: float = 1.0  # coefficient on the vol×corr-adjusted limit
-    disable_correlation_penalty: bool = False  # ignore correlation in the limit calc
-    disabled: bool = False  # passthrough cash limit; let Strategy alone size positions
-
-
-class StrategyConfig(BaseModel):
-    """Trading strategy declared by a Strategy node — read by the PM, partially
-    enforced by the Trading Account when placing paper orders.
-
-    Every field is optional so the model survives schema evolution; missing
-    fields fall back to "no preference" rather than crashing the run.
-    """
-    style: Optional[str] = None  # value | growth | momentum | mean_reversion | event_driven | income
-    sizing_rule: Optional[str] = None  # equal_weight | conviction_weighted | risk_parity | fixed_dollar
-    max_position_pct: Optional[float] = None  # cap on any single position as % of portfolio
-    max_sector_pct: Optional[float] = None  # cap on any single sector as % of portfolio (LLM-honoured)
-    holding_period: Optional[str] = None  # day | swing | position | long_term
-    stop_loss_pct: Optional[float] = None  # exit threshold below entry (optional)
-    take_profit_pct: Optional[float] = None  # exit threshold above entry (optional)
-    allow_stocks: bool = True
-    allow_options: bool = False
-    allow_etfs: bool = False
-    note: Optional[str] = None  # free-text mandate the PM reads verbatim
 
 
 class HedgeFundRequest(BaseHedgeFundRequest):

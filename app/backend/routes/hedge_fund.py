@@ -237,9 +237,7 @@ async def backtest(request_data: BacktestRequest, request: Request, db: Session 
         )
 
         # Construct agent graph using the React Flow graph structure (same as /run endpoint).
-        # Backtest doesn't currently thread upstream_map through; that's fine — without it,
-        # the upstream-prose injection is a no-op and the run behaves as before.
-        state_graph, _upstream_map = create_graph(graph_nodes=request_data.graph_nodes, graph_edges=request_data.graph_edges)
+        state_graph, upstream_map = create_graph(graph_nodes=request_data.graph_nodes, graph_edges=request_data.graph_edges)
         graph = state_graph.compile()
 
         # Create backtest service with the compiled graph
@@ -253,6 +251,8 @@ async def backtest(request_data: BacktestRequest, request: Request, db: Session 
             model_name=request_data.model_name,
             model_provider=model_provider,
             request=request_data,  # Pass the full request for agent-specific model access
+            flow_id=request_data.flow_id,  # Scope wiki writes to this flow → track record sees them
+            upstream_map=upstream_map,
         )
 
         # Function to detect client disconnection
