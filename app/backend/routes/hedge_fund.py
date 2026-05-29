@@ -120,7 +120,12 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
                         graph=graph,
                         portfolio=portfolio,
                         tickers=tickers,
-                        start_date=request_data.start_date,
+                        # Use the computed default (90 days back from end_date) when the
+                        # frontend doesn't send a start_date — without this, the field
+                        # arrived as None and Financial Datasets returned no bars,
+                        # which made the Risk Manager unable to compute any limits
+                        # and the PM emitted hold for every ticker.
+                        start_date=request_data.get_start_date(),
                         end_date=request_data.end_date,
                         model_name=request_data.model_name,
                         model_provider=model_provider,
