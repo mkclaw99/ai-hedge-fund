@@ -62,6 +62,13 @@ export interface HedgeFundRequest extends BaseHedgeFundRequest {
   starting_budget?: number;     // Trading Account node's Starting Budget (drives budget-aware sizing)
   strategy?: StrategyConfig;    // Strategy node config — style, sizing, caps, instruments, mandate
   skip_analysts?: boolean;      // Replay strategy on cached signals (no analyst re-run, no theme resolve)
+  risk_manager?: RiskManagerConfig; // Risk Manager node — vol/correlation cap overrides
+}
+
+export interface RiskManagerConfig {
+  limit_multiplier?: number;
+  disable_correlation_penalty?: boolean;
+  disabled?: boolean;
 }
 
 export interface StrategyConfig {

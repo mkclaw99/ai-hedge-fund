@@ -14,6 +14,13 @@ def risk_management_agent(state: AgentState, agent_id: str = "risk_management_ag
     data = state["data"]
     tickers = data["tickers"]
     api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
+
+    # Optional Risk Manager node config — overrides the hardcoded behaviour when a
+    # node is on the canvas. Defaults (None) reproduce the original logic exactly.
+    rm_cfg = (state.get("metadata", {}) or {}).get("risk_manager") or {}
+    rm_limit_multiplier = float(rm_cfg.get("limit_multiplier") or 1.0) if rm_cfg else 1.0
+    rm_disable_correlation = bool(rm_cfg.get("disable_correlation_penalty"))
+    rm_disabled = bool(rm_cfg.get("disabled"))
     
     # Initialize risk analysis for each ticker
     risk_analysis = {}
@@ -131,14 +138,14 @@ def risk_management_agent(state: AgentState, agent_id: str = "risk_management_ag
             vol_data.get("annualized_volatility", 0.25)
         )
 
-        # Correlation adjustment
+        # Correlation adjustment — skipped when the Risk Manager node has it disabled.
         corr_metrics = {
             "avg_correlation_with_active": None,
             "max_correlation_with_active": None,
             "top_correlated_tickers": [],
         }
         corr_multiplier = 1.0
-        if correlation_matrix is not None and ticker in correlation_matrix.columns:
+        if not rm_disable_correlation and correlation_matrix is not None and ticker in correlation_matrix.columns:
             # Compute correlations with active positions (exclude self)
             comparable = [t for t in active_positions if t in correlation_matrix.columns and t != ticker]
             if not comparable:
@@ -160,16 +167,24 @@ def risk_management_agent(state: AgentState, agent_id: str = "risk_management_ag
                     ]
                     corr_multiplier = calculate_correlation_multiplier(avg_corr)
         
-        # Combine volatility and correlation adjustments
-        combined_limit_pct = vol_adjusted_limit_pct * corr_multiplier
+        # Combine volatility and correlation adjustments, then apply the user's
+        # Risk Manager multiplier (default 1.0 = same as before).
+        combined_limit_pct = vol_adjusted_limit_pct * corr_multiplier * rm_limit_multiplier
         # Convert to dollar position limit
         position_limit = total_portfolio_value * combined_limit_pct
-        
+
         # Calculate remaining limit for this position
         remaining_position_limit = position_limit - current_position_value
-        
+
         # Ensure we don't exceed available cash
         max_position_size = min(remaining_position_limit, portfolio.get("cash", 0))
+
+        # When the Risk Manager node has filtering disabled, ignore the vol/corr
+        # math entirely and just hand the PM all the cash — Strategy's hard cap
+        # (or the PM itself) is then the only gate. The reasoning block still
+        # records what *would* have been computed, for transparency.
+        if rm_disabled:
+            max_position_size = float(portfolio.get("cash", 0) or 0)
         
         risk_analysis[ticker] = {
             "remaining_position_limit": float(max_position_size),

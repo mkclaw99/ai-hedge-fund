@@ -8,6 +8,7 @@ import { ResearchAreaNode } from './components/research-area-node';
 import { ResearchCompaniesNode } from './components/research-companies-node';
 import { PortfolioManagerNode } from './components/portfolio-manager-node';
 import { PortfolioStartNode } from './components/portfolio-start-node';
+import { RiskManagerNode } from './components/risk-manager-node';
 import { StockAnalyzerNode } from './components/stock-analyzer-node';
 import { StrategyNode } from './components/strategy-node';
 import { TradingAccountNode } from './components/trading-account-node';
@@ -63,6 +64,7 @@ export const nodeTypes = {
   'research-companies-node': ResearchCompaniesNode,
   'portfolio-start-node': PortfolioStartNode,
   'portfolio-manager-node': PortfolioManagerNode,
+  'risk-manager-node': RiskManagerNode,
   'stock-analyzer-node': StockAnalyzerNode,
   'strategy-node': StrategyNode,
   'trading-account-node': TradingAccountNode,
