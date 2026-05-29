@@ -243,6 +243,13 @@ def generate_trading_decision(
     # data problem renders a one-line "no derivatives" note.
     derivatives_block = _render_derivatives_block(strategy, tickers_for_llm, state)
 
+    # Track record — score past decisions against actual price moves and inject
+    # the result as a feedback signal. This is the "learn from your mistakes
+    # and successes" channel: the PM sees its own hit rate per analyst and per
+    # ticker over the strategy's holding period, so it can calibrate confidence
+    # against history. Empty string when the wiki has no insights yet.
+    track_record_block = _render_track_record_block(strategy, tickers_for_llm, state)
+
     # Add option actions to every ticker's allowed set when Strategy permits
     # options. Each contract = 100 shares of underlying exposure; cap qty at a
     # conservative 5 contracts per opening trade (PM is free to ask for fewer).
@@ -270,6 +277,11 @@ def generate_trading_decision(
                 "weigh it, but the current signals take precedence.\n"
                 "If a `## Strategy Mandate` block is present, follow it: it sets your trading style, "
                 "sizing rule, caps, holding period, and which instruments you may consider.\n"
+                "If a `## Track Record` block is present, it shows how your past calls actually "
+                "played out (closed WIN/LOSS + still-OPEN positions, per-analyst hit rates). "
+                "Use it to calibrate: where you've been overconfident, which analysts misfire on "
+                "which tickers. Don't slavishly follow it — but if today's signals contradict a "
+                "strong historical pattern, weigh the pattern.\n"
                 "If a `## Derivatives` block is present (options enabled), you may also place OPTION "
                 "orders on the underlying tickers:\n"
                 "  • `buy_call` / `buy_put` — buy-to-open (cost ≈ ask × 100 × qty).\n"
@@ -286,7 +298,7 @@ def generate_trading_decision(
                 "Signals:\n{signals}\n\n"
                 "Allowed:\n{allowed}\n\n"
                 "Prior research:\n{prior}\n\n"
-                "{strategy}{derivatives}"
+                "{strategy}{derivatives}{track_record}"
                 "Format:\n"
                 "{{\n"
                 '  "decisions": {{\n'
@@ -303,6 +315,7 @@ def generate_trading_decision(
         "prior": prior or "(none on record)",
         "strategy": strategy_block,
         "derivatives": derivatives_block,
+        "track_record": track_record_block,
     }
     prompt = template.invoke(prompt_data)
 
@@ -398,3 +411,40 @@ def _render_derivatives_block(strategy, tickers, state):
             lines.append(f"- **{t}**: options summary unavailable")
     lines.append("")
     return "\n".join(lines)
+
+
+def _render_track_record_block(strategy, tickers, state):
+    """Score past decisions against actual price moves and render the result.
+
+    Reads insights from the flow's wiki (per-flow scope already enforced by
+    `flow_root(flow_slug)`), looks up prices for each ticker via the cached
+    Financial Datasets API, and computes WIN/LOSS/OPEN per past insight at the
+    Strategy node's holding-period horizon. Empty string when the wiki has no
+    history yet or anything goes wrong — the PM degrades to "no track record"
+    rather than crashing.
+    """
+    try:
+        from src.memory import flow_root
+        from src.memory.track_record import (
+            compute_outcomes,
+            holding_days_from_strategy,
+            render_track_record_block,
+        )
+
+        flow_slug = (state.get("metadata", {}) or {}).get("flow_slug")
+        root = flow_root(flow_slug)
+        if not root or not tickers:
+            return ""
+        api_keys = None
+        request = (state.get("metadata", {}) or {}).get("request")
+        if request and hasattr(request, "api_keys"):
+            api_keys = request.api_keys
+        outcomes = compute_outcomes(
+            tickers, root,
+            api_keys=api_keys,
+            holding_days=holding_days_from_strategy(strategy),
+        )
+        block = render_track_record_block(outcomes)
+        return block + ("\n" if block else "")
+    except Exception:
+        return ""
