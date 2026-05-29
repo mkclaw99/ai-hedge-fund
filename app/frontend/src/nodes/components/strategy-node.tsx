@@ -1,5 +1,5 @@
 import { useReactFlow, type NodeProps } from '@xyflow/react';
-import { History, Loader2, Play, Square, Target } from 'lucide-react';
+import { BarChart3, History, Loader2, Play, Square, Target } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -14,6 +14,7 @@ import { primaryAgentModel } from '@/lib/agent-models';
 import { getFlowMemory } from '@/services/memory-api';
 import { type StrategyNode as StrategyNodeT } from '../types';
 import { NodeShell } from './node-shell';
+import { TrackRecordDialog } from './track-record-dialog';
 
 /**
  * Strategy node — declares the rules of the trading game for this flow.
@@ -99,6 +100,7 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
   const [backtestStartDate, setBacktestStartDate] = useNodeState<string>(id, 'backtestStartDate', thirtyAgo);
   const [backtestEndDate, setBacktestEndDate] = useNodeState<string>(id, 'backtestEndDate', today);
   const [backtestError, setBacktestError] = useState<string | null>(null);
+  const [trackRecordOpen, setTrackRecordOpen] = useState(false);
 
   // Parse a numeric-ish string into a float; non-finite values collapse to
   // undefined so they don't override Pydantic defaults on the backend.
@@ -436,6 +438,31 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
                 )}
               </div>
 
+              {/* Track record — opens a dialog with the same data the PM sees
+                  in its prompt (PR #65), so the user can audit the learning
+                  loop visually without reading agent prose. */}
+              <Tooltip delayDuration={200}>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={noMemory}
+                    onClick={() => setTrackRecordOpen(true)}
+                    className="nodrag w-full justify-center gap-2"
+                    aria-label="View the strategy's track record"
+                  >
+                    <BarChart3 className="h-3.5 w-3.5" />
+                    View track record
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-xs">
+                  {noMemory
+                    ? 'Run the full flow at least once first — track record needs decisions in the wiki.'
+                    : 'See WIN/LOSS/OPEN per past decision + per-analyst and per-(analyst, ticker) hit rates. Same data the PM uses in its prompt.'}
+                </TooltipContent>
+              </Tooltip>
+
               {/* Style + sizing rule */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
@@ -614,6 +641,12 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
           </div>
         </CardContent>
       </NodeShell>
+      <TrackRecordDialog
+        isOpen={trackRecordOpen}
+        onOpenChange={setTrackRecordOpen}
+        flowId={currentFlowId}
+        holdingPeriod={holdingPeriod as any}
+      />
     </TooltipProvider>
   );
 }

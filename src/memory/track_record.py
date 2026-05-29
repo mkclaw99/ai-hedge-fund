@@ -235,42 +235,100 @@ def _skip_row(i: Insight) -> dict:
     }
 
 
-def analyst_hit_rates(outcomes) -> dict[str, dict]:
-    """Per-analyst rollup over CLOSED outcomes only. {analyst: {wins, losses, n, hit_rate, avg_win, avg_loss}}."""
-    by: dict[str, dict] = {}
+# Half-life for time-weighting (days). A 60-day-old call has half the weight of
+# a fresh one; a 120-day-old call carries 25%. Picked to be generous — fully
+# discarding stale calls loses signal — but the half-life is short enough that
+# a model whose calls improve quickly sees its recent record dominate.
+_HALF_LIFE_DAYS = 60
+
+
+def _weight_for_age(age_days: int, half_life: int = _HALF_LIFE_DAYS) -> float:
+    if age_days <= 0:
+        return 1.0
+    return 0.5 ** (age_days / half_life)
+
+
+def _rollup(outcomes, *, group_key, today: Optional[_date] = None) -> dict:
+    """Group closed outcomes by ``group_key(outcome) -> hashable`` and compute
+    {wins, losses, n, hit_rate, hit_rate_weighted, avg_win, avg_loss} per group.
+
+    Weighted hit rate uses an exponential half-life on the insight's age so a
+    model whose calls improve over time sees its recent record dominate.
+    """
+    today = today or _date.today()
+    by: dict = {}
     for o in outcomes or []:
         if o.get("outcome") not in ("WIN", "LOSS"):
             continue
-        a = o.get("analyst") or "?"
-        cell = by.setdefault(a, {"wins": 0, "losses": 0, "win_returns": [], "loss_returns": []})
+        key = group_key(o)
+        if key is None:
+            continue
+        d = _parse_date(o.get("date") or "")
+        age = (today - d).days if d else 0
+        w = _weight_for_age(age)
+        cell = by.setdefault(key, {
+            "wins": 0, "losses": 0,
+            "wins_w": 0.0, "losses_w": 0.0,
+            "win_returns": [], "loss_returns": [],
+        })
+        ret = o.get("return_pct") or 0
         if o["outcome"] == "WIN":
             cell["wins"] += 1
-            cell["win_returns"].append(o.get("return_pct") or 0)
+            cell["wins_w"] += w
+            cell["win_returns"].append(ret)
         else:
             cell["losses"] += 1
-            cell["loss_returns"].append(o.get("return_pct") or 0)
-    for a, cell in by.items():
+            cell["losses_w"] += w
+            cell["loss_returns"].append(ret)
+    for key, cell in by.items():
         n = cell["wins"] + cell["losses"]
+        n_w = cell["wins_w"] + cell["losses_w"]
         cell["n"] = n
         cell["hit_rate"] = round(cell["wins"] / n * 100, 1) if n else 0.0
+        cell["hit_rate_weighted"] = round(cell["wins_w"] / n_w * 100, 1) if n_w > 0 else 0.0
         cell["avg_win"] = round(sum(cell["win_returns"]) / len(cell["win_returns"]), 2) if cell["win_returns"] else 0.0
         cell["avg_loss"] = round(sum(cell["loss_returns"]) / len(cell["loss_returns"]), 2) if cell["loss_returns"] else 0.0
-        # Pop the lists — keep the dict compact for prompt rendering.
+        # Keep the cell compact for prompt rendering — drop the per-trade lists.
         cell.pop("win_returns"); cell.pop("loss_returns")
+        cell.pop("wins_w"); cell.pop("losses_w")
     return by
 
 
-def render_track_record_block(outcomes, *, max_rows: int = 15) -> str:
-    """Markdown block for the PM prompt. Empty string when there's nothing to show."""
+def analyst_hit_rates(outcomes, *, today: Optional[_date] = None) -> dict[str, dict]:
+    """Per-analyst rollup over CLOSED outcomes only."""
+    return _rollup(outcomes, group_key=lambda o: o.get("analyst") or "?", today=today)
+
+
+def analyst_ticker_hit_rates(outcomes, *, today: Optional[_date] = None, min_n: int = 2) -> dict[tuple[str, str], dict]:
+    """Per-(analyst, ticker) rollup — the real learning signal. ``min_n``
+    filters out single-data-point cells (one win or one loss is noise, not a
+    pattern)."""
+    full = _rollup(outcomes, group_key=lambda o: (o.get("analyst") or "?", o.get("ticker") or "?"), today=today)
+    return {k: v for k, v in full.items() if v["n"] >= min_n}
+
+
+def render_track_record_block(outcomes, *, max_rows: int = 15, today: Optional[_date] = None) -> str:
+    """Markdown block for the PM prompt. Empty string when there's nothing to show.
+
+    Shows both raw and time-weighted hit rates (recent calls weighed more),
+    plus per-(analyst, ticker) cells where the signal is real (≥ 2 closed
+    calls). The PM uses this to calibrate: which analysts misfire on which
+    specific tickers, and whether the model has been improving over time.
+    """
     rows = [o for o in (outcomes or []) if o.get("outcome") in ("WIN", "LOSS", "OPEN")]
     if not rows:
         return ""
 
-    hit_rates = analyst_hit_rates(outcomes)
+    today = today or _date.today()
+    hit_rates = analyst_hit_rates(outcomes, today=today)
+    at_cells = analyst_ticker_hit_rates(outcomes, today=today, min_n=2)
     overall_wins = sum(r.get("outcome") == "WIN" for r in rows)
     overall_losses = sum(r.get("outcome") == "LOSS" for r in rows)
     overall_open = sum(r.get("outcome") == "OPEN" for r in rows)
     closed = overall_wins + overall_losses
+
+    # Weighted overall: collapse all closed outcomes into one rollup.
+    overall_w = _rollup(outcomes, group_key=lambda o: "__overall__", today=today).get("__overall__", {})
 
     lines: list[str] = []
     lines.append("## Track Record (your past calls vs. actual outcomes)")
@@ -278,22 +336,38 @@ def render_track_record_block(outcomes, *, max_rows: int = 15) -> str:
     lines.append("Use this to calibrate. Look for systematic biases: tickers where you")
     lines.append("are repeatedly wrong, signals that don't pay off, overconfident calls")
     lines.append("that mis-fire. When the evidence disagrees with the historical track")
-    lines.append("record, take the track record more seriously.")
+    lines.append("record, take the track record more seriously. Time-weighted hit rate")
+    lines.append("emphasises recent calls (60-day half-life).")
     lines.append("")
     if closed:
-        rate = round(overall_wins / closed * 100, 1)
+        raw = round(overall_wins / closed * 100, 1)
+        weighted = overall_w.get("hit_rate_weighted", raw)
         lines.append(
-            f"**Overall (closed):** {overall_wins}W / {overall_losses}L  ·  hit rate **{rate}%**  ·  {overall_open} OPEN"
+            f"**Overall (closed):** {overall_wins}W / {overall_losses}L  ·  raw **{raw}%** · time-weighted **{weighted}%**  ·  {overall_open} OPEN"
         )
     else:
         lines.append(f"**Overall:** 0 closed yet, {overall_open} OPEN")
 
     if hit_rates:
         lines.append("")
-        lines.append("**Per-analyst hit rate (closed only):**")
-        for a, cell in sorted(hit_rates.items(), key=lambda kv: -kv[1]["hit_rate"]):
+        lines.append("**Per-analyst (closed):**")
+        for a, cell in sorted(hit_rates.items(), key=lambda kv: -kv[1]["hit_rate_weighted"]):
             lines.append(
-                f"- {a}: {cell['wins']}W/{cell['losses']}L ({cell['hit_rate']}%) · avg win +{cell['avg_win']}% / avg loss {cell['avg_loss']}%"
+                f"- {a}: {cell['wins']}W/{cell['losses']}L · raw {cell['hit_rate']}% · weighted **{cell['hit_rate_weighted']}%** · avg win +{cell['avg_win']}% / avg loss {cell['avg_loss']}%"
+            )
+
+    if at_cells:
+        lines.append("")
+        lines.append("**Per-(analyst, ticker) — patterns to look at (≥ 2 closed calls):**")
+        # Sort by spread from 50% so the lopsided cells (strong winners or losers)
+        # bubble up — those are the actionable patterns.
+        sorted_cells = sorted(
+            at_cells.items(),
+            key=lambda kv: -abs(kv[1]["hit_rate_weighted"] - 50),
+        )
+        for (a, t), cell in sorted_cells[:12]:
+            lines.append(
+                f"- {a} on {t}: {cell['wins']}W/{cell['losses']}L · weighted {cell['hit_rate_weighted']}%"
             )
 
     lines.append("")
@@ -303,8 +377,6 @@ def render_track_record_block(outcomes, *, max_rows: int = 15) -> str:
     lines.append("|------|--------|---------|--------|------|-------|------|--------|---------|")
     for o in rows[:max_rows]:
         ret = o.get("return_pct") or 0.0
-        # `-0.0` rounds happen for OPEN trades that haven't moved yet — show 0.0
-        # so we don't render "+-0.0%".
         if abs(ret) < 0.005:
             ret = 0.0
         sign = "+" if ret >= 0 else ""
@@ -316,3 +388,39 @@ def render_track_record_block(outcomes, *, max_rows: int = 15) -> str:
         lines.append(f"\n_({len(rows) - max_rows} older rows omitted.)_")
     lines.append("")
     return "\n".join(lines)
+
+
+def track_record_summary(outcomes, *, today: Optional[_date] = None) -> dict:
+    """Structured summary for the frontend Track Record dialog — same data
+    the PM reads, but as JSON instead of Markdown. Empty when no outcomes."""
+    if not outcomes:
+        return {
+            "overall": {"wins": 0, "losses": 0, "open": 0, "hit_rate": 0.0, "hit_rate_weighted": 0.0},
+            "analysts": {},
+            "analyst_tickers": [],
+            "recent": [],
+        }
+    today = today or _date.today()
+    rows = [o for o in outcomes if o.get("outcome") in ("WIN", "LOSS", "OPEN")]
+    wins = sum(r.get("outcome") == "WIN" for r in rows)
+    losses = sum(r.get("outcome") == "LOSS" for r in rows)
+    open_ = sum(r.get("outcome") == "OPEN" for r in rows)
+    closed = wins + losses
+    overall_w = _rollup(outcomes, group_key=lambda o: "__overall__", today=today).get("__overall__", {})
+    at = analyst_ticker_hit_rates(outcomes, today=today, min_n=2)
+    return {
+        "overall": {
+            "wins": wins,
+            "losses": losses,
+            "open": open_,
+            "hit_rate": round(wins / closed * 100, 1) if closed else 0.0,
+            "hit_rate_weighted": overall_w.get("hit_rate_weighted", 0.0),
+        },
+        "analysts": analyst_hit_rates(outcomes, today=today),
+        # Flatten the tuple keys for JSON.
+        "analyst_tickers": [
+            {"analyst": a, "ticker": t, **cell}
+            for (a, t), cell in sorted(at.items(), key=lambda kv: -abs(kv[1]["hit_rate_weighted"] - 50))
+        ],
+        "recent": rows[:50],
+    }
