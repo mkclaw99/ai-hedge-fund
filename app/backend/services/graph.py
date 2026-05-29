@@ -302,6 +302,10 @@ def run_graph(
 #   "sell" / "cover" → CLOSE (bounded by what's actually held)
 _OPENING_SIDE = {"buy": "buy", "short": "sell"}
 _CLOSING_SIDE = {"sell": "sell", "cover": "buy"}
+# Option opening actions and their Alpaca-API order side. Closing options is a
+# follow-up — for now the PM only emits opens, and closes happen via expiry/
+# assignment or manual intervention.
+_OPTION_OPEN_SIDE = {"buy_call": "buy", "buy_put": "buy", "sell_call": "sell", "sell_put": "sell"}
 
 
 def _safe_progress(*args, **kwargs):
@@ -333,9 +337,11 @@ def _place_paper_orders_for_decisions(decisions: dict, request) -> None:
             _safe_progress("trading_account", None, "Auto-trade skipped: ALPACA_PAPER credentials not set in Settings")
             return
 
-        # Categorize decisions into opens vs closes (skip hold / unknown / non-dict).
+        # Categorize decisions: stock opens, stock closes, option opens.
+        # Hold / unknown / malformed entries are dropped.
         opens: list[tuple[str, str, dict]] = []   # (ticker, action, dec)
         closes: list[tuple[str, str, dict]] = []
+        option_opens: list[tuple[str, str, dict]] = []
         for ticker, dec in (decisions or {}).items():
             if not isinstance(dec, dict):
                 continue
@@ -344,6 +350,8 @@ def _place_paper_orders_for_decisions(decisions: dict, request) -> None:
                 opens.append((str(ticker).upper(), action, dec))
             elif action in _CLOSING_SIDE:
                 closes.append((str(ticker).upper(), action, dec))
+            elif action in _OPTION_OPEN_SIDE:
+                option_opens.append((str(ticker).upper(), action, dec))
 
         # Account snapshot (used for both budget and held positions).
         account = alpaca_paper.get_account(api_keys)
@@ -423,6 +431,42 @@ def _place_paper_orders_for_decisions(decisions: dict, request) -> None:
             qty = min(pm_qty, cap)
             sized.append((ticker, _CLOSING_SIDE[action], qty, action, f"held {int(held)}, PM {pm_qty} → {qty}"))
 
+        # Option opens — separate sizing because units are contracts (×100 shares
+        # of underlying exposure each). Buying options costs the ask premium up
+        # front; selling them collects the bid as premium but the broker holds
+        # collateral, which buying_power already reflects. We honour PM qty but
+        # cap by Strategy's max-position dollar cap when set (premium-spend cap
+        # for buys; notional-exposure cap for sells).
+        option_orders: list[tuple[str, str, str, int, str, str]] = []  # (ticker, occ, side, qty, action, debug)
+        for ticker, action, dec in option_opens:
+            occ = str(dec.get("option_contract") or "").upper()
+            if not occ:
+                _safe_progress("trading_account", ticker, f"Skipped {action}: no option_contract on the decision")
+                continue
+            try:
+                pm_qty = int(float(dec.get("quantity") or 0))
+            except (TypeError, ValueError):
+                pm_qty = 0
+            if pm_qty <= 0:
+                _safe_progress("trading_account", ticker, f"Skipped {action} {occ}: PM quantity is 0 contracts")
+                continue
+            qty = pm_qty
+            cap_note = ""
+            if per_position_cap is not None and per_position_cap > 0:
+                # Best-effort sizing cap: assume premium ≈ underlying spot × small fraction
+                # for buys, or strike × small fraction for sells. We don't have the chain
+                # snapshot here; instead, gate by max contracts = max(1, cap / (spot × 100)).
+                # If we have a spot price for the underlying, use it; otherwise no cap.
+                spot = prices.get(ticker) or 0.0
+                if spot > 0:
+                    max_contracts = max(1, int(per_position_cap // (spot * 100)))
+                    if qty > max_contracts:
+                        cap_note = f" capped @{max_position_pct:g}% of portfolio ({max_contracts} contracts)"
+                        qty = max_contracts
+            side = _OPTION_OPEN_SIDE[action]
+            debug = f"{action} {qty}x {occ}{cap_note}"
+            option_orders.append((ticker, occ, side, qty, action, debug))
+
         # Submit each independently.
         placed = 0
         for ticker, side, qty, action, debug in sized:
@@ -440,6 +484,27 @@ def _place_paper_orders_for_decisions(decisions: dict, request) -> None:
                     "trading_account",
                     ticker,
                     f"Order failed: {res.get('error', 'unknown error')}",
+                )
+
+        # Submit option orders. Errors are logged but never break the run — common
+        # failure modes (insufficient options-level permission on the paper
+        # account, market closed, contract no longer tradable) are visible in
+        # the Output panel so the user can address them.
+        for ticker, occ, side, qty, action, debug in option_orders:
+            _safe_progress("trading_account", ticker, f"Placing OPTION {side.upper()} {qty} ({action} · {debug})…")
+            res = alpaca_paper.place_option_order(api_keys, symbol_occ=occ, side=side, qty=qty)
+            if res.get("ok"):
+                placed += 1
+                _safe_progress(
+                    "trading_account",
+                    ticker,
+                    f"Placed OPTION {side.upper()} {res.get('qty')} {occ} ({res.get('status','submitted')})",
+                )
+            else:
+                _safe_progress(
+                    "trading_account",
+                    ticker,
+                    f"Option order failed ({occ}): {res.get('error', 'unknown error')}",
                 )
 
         _safe_progress(

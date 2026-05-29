@@ -170,29 +170,51 @@ def get_options_summary(ticker: str, api_keys) -> dict:
     except Exception:
         spot = None
 
-    # 2. Pull the chain (Alpaca returns a paginated `snapshots` dict). One page is
-    # plenty for a summary — we only care about the nearest expiry.
-    try:
-        r = requests.get(
-            f"{_DATA_BASE}/options/snapshots/{sym}",
-            headers=h, timeout=15,
-        )
-    except Exception as e:
-        return {"optionable": False, "reason": f"chain fetch failed: {e}"}
+    # 2. Pull the chain. Alpaca returns a paginated `snapshots` dict — one page
+    # is ~100 contracts and a real chain has hundreds of strikes across many
+    # expiries, so a single-page sample skews toward whatever strikes Alpaca
+    # happens to return first (often deep OTM). We follow `next_page_token`
+    # across a few pages so the ATM picker actually sees strikes near spot.
+    # 3 pages is a reasonable ceiling — caps latency, still gets the relevant
+    # strikes for most names. Fail-open per page: a bad page stops pagination
+    # but keeps whatever was already collected.
+    snapshots: dict = {}
+    next_token: str | None = None
+    pages_fetched = 0
+    MAX_PAGES = 3
+    while pages_fetched < MAX_PAGES:
+        params = {"limit": 100}
+        if next_token:
+            params["page_token"] = next_token
+        try:
+            r = requests.get(
+                f"{_DATA_BASE}/options/snapshots/{sym}",
+                headers=h, params=params, timeout=15,
+            )
+        except Exception as e:
+            if pages_fetched == 0:
+                return {"optionable": False, "reason": f"chain fetch failed: {e}"}
+            break  # partial chain is better than nothing
+        if r.status_code == 404:
+            return {"optionable": False, "reason": "no chain (likely non-optionable)"}
+        if r.status_code in (401, 403):
+            return {"optionable": False, "reason": "options data forbidden (paper plan?)"}
+        if r.status_code != 200:
+            if pages_fetched == 0:
+                return {"optionable": False, "reason": f"Alpaca {r.status_code}"}
+            break
+        try:
+            payload = r.json() or {}
+        except Exception:
+            if pages_fetched == 0:
+                return {"optionable": False, "reason": "non-JSON response"}
+            break
+        snapshots.update(payload.get("snapshots") or {})
+        pages_fetched += 1
+        next_token = payload.get("next_page_token")
+        if not next_token:
+            break
 
-    if r.status_code == 404:
-        return {"optionable": False, "reason": "no chain (likely non-optionable)"}
-    if r.status_code in (401, 403):
-        return {"optionable": False, "reason": "options data forbidden (paper plan?)"}
-    if r.status_code != 200:
-        return {"optionable": False, "reason": f"Alpaca {r.status_code}"}
-
-    try:
-        payload = r.json() or {}
-    except Exception:
-        return {"optionable": False, "reason": "non-JSON response"}
-
-    snapshots = payload.get("snapshots") or {}
     if not snapshots:
         return {"optionable": False, "reason": "empty snapshots"}
 
