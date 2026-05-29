@@ -285,6 +285,32 @@ export function Flow({ className = '' }: FlowProps) {
     }
   }, [isInitialized]);
 
+  // Delete an edge by double-clicking it (with a native confirm).
+  // Why double-click instead of right-click: in a normal browser, right-click is
+  // the OS context menu — React's onContextMenu fires but is often overridden,
+  // so it's an unreliable affordance. Double-click is always passed through and
+  // the SVG path's `interactionWidth` (~20px hit area) makes it easy to land.
+  // We route through the same `handleEdgesChange` path React Flow uses for the
+  // built-in Delete-key flow, so the change is snapshotted for undo and the
+  // auto-save fires the same way.
+  const onEdgeDoubleClick = useCallback(
+    (event: React.MouseEvent, edge: Edge) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const src = nodes.find((n) => n.id === edge.source);
+      const tgt = nodes.find((n) => n.id === edge.target);
+      const label = (n?: AppNode) => (n?.data as any)?.name || n?.id || '(?)';
+      // eslint-disable-next-line no-alert
+      const ok = window.confirm(
+        `Delete the connection from "${label(src)}" to "${label(tgt)}"?`,
+      );
+      if (!ok) return;
+      takeSnapshot();
+      handleEdgesChange([{ type: 'remove', id: edge.id }]);
+    },
+    [nodes, takeSnapshot, handleEdgesChange],
+  );
+
   // Connect two nodes with marker
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -343,6 +369,7 @@ export function Flow({ className = '' }: FlowProps) {
           edges={edges}
           edgeTypes={edgeTypes}
           onEdgesChange={handleEdgesChange}
+          onEdgeDoubleClick={onEdgeDoubleClick}
           onConnect={onConnect}
           onInit={onInit}
           colorMode={colorMode}
