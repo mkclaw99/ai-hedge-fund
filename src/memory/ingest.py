@@ -186,3 +186,45 @@ def read_back(tickers: list[str], *, analyst: str | None = None, root: str | Non
     except Exception as exc:  # fail-open
         logger.warning("WikiMemory read-back skipped due to error: %s", exc)
         return ""
+
+
+def read_latest_signals(tickers: list[str], *, root: str | None = None) -> dict[str, dict[str, dict]]:
+    """Rehydrate ``analyst_signals`` from the wiki for a replay-strategy run.
+
+    Shape mirrors what live analysts populate in ``state["data"]["analyst_signals"]``:
+    ``{agent_key: {ticker: {signal, confidence, reasoning}}}``. The PM filters on
+    the ``risk_management_agent`` prefix and otherwise treats every key as an
+    analyst — so we synthesize a stable key from the normalized analyst name
+    (e.g. ``"Warren Buffett" → "warren_buffett_agent"``). Risk-manager entries
+    in memory (if any) are dropped — risk lives in the fresh run, not the wiki.
+
+    Returns ``{}`` for any unhappy path (no tickers, no root, empty wiki,
+    unexpected shape). Callers should treat ``{}`` as "no prior signals" and
+    fall through to default PM behaviour.
+    """
+    if not is_enabled() or not tickers or not root:
+        return {}
+    try:
+        wiki = WikiMemory(root)
+        out: dict[str, dict[str, dict]] = {}
+        for t in tickers:
+            ctx = wiki.query_ticker(t)
+            for analyst_name, ins in (ctx.latest_by_analyst or {}).items():
+                key = analyst_name.lower().replace(" ", "_") + "_agent"
+                # Risk recomputes live — never replayed from memory.
+                # The PM's own past decisions show up under "Portfolio Manager" too;
+                # excluding them prevents the replay from feeding the PM its own
+                # prior signal as if it were an analyst's opinion (feedback loop).
+                # The PM still reads its past decisions via the `prior research`
+                # read_back path — same as a normal run — so the info isn't lost.
+                if key.startswith("risk_management_agent") or key.startswith("portfolio_manager"):
+                    continue
+                out.setdefault(key, {})[t] = {
+                    "signal": ins.signal,
+                    "confidence": int(ins.confidence),
+                    "reasoning": ins.reasoning,
+                }
+        return out
+    except Exception as exc:
+        logger.warning("WikiMemory replay-signals read skipped due to error: %s", exc)
+        return {}

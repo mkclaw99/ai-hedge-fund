@@ -172,6 +172,11 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     # Strategy node config — declares trading rules (style, sizing, caps, instruments,
     # free-text mandate). Read by the PM; the Trading Account enforces max_position_pct.
     strategy: Optional[StrategyConfig] = None
+    # Replay-strategy mode: skip the analyst layer and pre-populate analyst_signals
+    # from the flow's wiki, so the PM re-decides on cached signals with the new
+    # Strategy params. The frontend sends a slimmed `graph_nodes` (just the PM) and
+    # the explicit ticker universe — no theme/research re-run, no LLM analyst calls.
+    skip_analysts: Optional[bool] = False
 
     def get_start_date(self) -> str:
         """Calculate start date if not provided"""

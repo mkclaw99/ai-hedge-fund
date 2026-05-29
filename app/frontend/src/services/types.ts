@@ -61,6 +61,7 @@ export interface HedgeFundRequest extends BaseHedgeFundRequest {
   place_paper_orders?: boolean; // submit PM decisions to Alpaca PAPER (opt-in via Trading Account node)
   starting_budget?: number;     // Trading Account node's Starting Budget (drives budget-aware sizing)
   strategy?: StrategyConfig;    // Strategy node config — style, sizing, caps, instruments, mandate
+  skip_analysts?: boolean;      // Replay strategy on cached signals (no analyst re-run, no theme resolve)
 }
 
 export interface StrategyConfig {
