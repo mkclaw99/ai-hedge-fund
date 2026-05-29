@@ -24,6 +24,7 @@ import { useFlowContext } from '@/contexts/flow-context';
 import { useEnhancedFlowActions } from '@/hooks/use-enhanced-flow-actions';
 import { useFlowHistory } from '@/hooks/use-flow-history';
 import { useFlowKeyboardShortcuts, useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
+import { addStateChangeListener } from '@/hooks/use-node-state';
 import { useToastManager } from '@/hooks/use-toast-manager';
 import { AppNode } from '@/nodes/types';
 import { edgeTypes } from '../edges';
@@ -90,6 +91,23 @@ export function Flow({ className = '' }: FlowProps) {
       }
     }, 1000); // 1 second debounce
   }, [currentFlowId, saveCurrentFlowWithCompleteState]);
+
+  // Auto-save on internal node-state changes (toggles, dropdowns, textareas, …).
+  // `useNodeState` writes to `flowStateManager` directly — not to React Flow's
+  // node array — so the structural-change handlers below never fire for these
+  // edits, and without this listener the saved DB row stays stale until the
+  // user happens to also add/move/delete a node. Result before this fix: every
+  // toggle (Options/ETFs/correlation-penalty/etc.), every theme/mandate/note
+  // edit reverts on reload. The save itself reads the latest state via
+  // `getNodeInternalState`, so once we just call `autoSave`, the 1s debounce
+  // captures everything.
+  useEffect(() => {
+    if (!isInitialized) return;
+    const unsubscribe = addStateChangeListener(() => {
+      if (currentFlowId) autoSave(currentFlowId);
+    });
+    return unsubscribe;
+  }, [isInitialized, currentFlowId, autoSave]);
 
   // Enhanced onNodesChange handler with auto-save for specific change types
   const handleNodesChange = useCallback((changes: NodeChange<AppNode>[]) => {

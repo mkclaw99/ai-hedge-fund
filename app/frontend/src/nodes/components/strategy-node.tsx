@@ -68,7 +68,13 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
   const [stopLossPct, setStopLossPct] = useNodeState<string>(id, 'stopLossPct', '');
   const [takeProfitPct, setTakeProfitPct] = useNodeState<string>(id, 'takeProfitPct', '');
   const [allowStocks, setAllowStocks] = useNodeState<boolean>(id, 'allowStocks', true);
-  const [allowOptions, setAllowOptions] = useNodeState<boolean>(id, 'allowOptions', false);
+  // Options default ON — you asked for "access all derivatives related to the
+  // companies in scope" when you spec'd the Strategy node, so the toggle
+  // matches that intent on first add. The cost is one Alpaca-options call per
+  // ticker per run; flip it off if you want stock-only runs.
+  const [allowOptions, setAllowOptions] = useNodeState<boolean>(id, 'allowOptions', true);
+  // ETFs default OFF — currently a *hint* to the PM (no discovery API yet),
+  // so leaving it on adds prompt noise for nothing.
   const [allowEtfs, setAllowEtfs] = useNodeState<boolean>(id, 'allowEtfs', false);
   const [note, setNote] = useNodeState<string>(id, 'note', '');
 
