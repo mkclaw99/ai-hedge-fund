@@ -12,6 +12,7 @@ from app.backend.routes.memory import router as memory_router
 from app.backend.routes.research import router as research_router
 from app.backend.routes.tickers import router as tickers_router
 from app.backend.routes.trading import router as trading_router
+from app.backend.routes.derivatives import router as derivatives_router
 from app.backend.routes.usage import router as usage_router
 
 # Main API router
@@ -31,3 +32,4 @@ api_router.include_router(research_router, tags=["research"])
 api_router.include_router(usage_router, tags=["usage"])
 api_router.include_router(tickers_router, tags=["tickers"])
 api_router.include_router(trading_router, tags=["trading"])
+api_router.include_router(derivatives_router, tags=["derivatives"])

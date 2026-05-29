@@ -112,12 +112,38 @@ export function ResearchAreaNode({
     const companyMandate = (fcState.mandate as string) || '';
     const companyMax = parseInt(fcState.maxCompanies as string, 10) || 10;
 
+    // Strategy node (optional). When reachable, its fields ride on the request and
+    // become `state.metadata.strategy`. First match wins if the user has more than
+    // one wired in (shouldn't but we don't enforce uniqueness yet).
+    const strategyNode = allNodes.find((n) => reachable.has(n.id) && n.type === 'strategy-node');
+    const sState = (strategyNode ? getNodeInternalState(strategyNode.id) : null) as any;
+    const numOrNull = (v: any) => {
+      const x = parseFloat(v);
+      return Number.isFinite(x) ? x : undefined;
+    };
+    const strategy = strategyNode
+      ? {
+          style: (sState?.style as string) || undefined,
+          sizing_rule: (sState?.sizingRule as string) || undefined,
+          max_position_pct: numOrNull(sState?.maxPositionPct),
+          max_sector_pct: numOrNull(sState?.maxSectorPct),
+          holding_period: (sState?.holdingPeriod as string) || undefined,
+          stop_loss_pct: numOrNull(sState?.stopLossPct),
+          take_profit_pct: numOrNull(sState?.takeProfitPct),
+          allow_stocks: sState?.allowStocks !== false, // default ON
+          allow_options: !!sState?.allowOptions,
+          allow_etfs: !!sState?.allowEtfs,
+          note: (sState?.note as string) || undefined,
+        }
+      : undefined;
+
     // Resource/input nodes don't execute in the backend graph.
     const agentNodes = allNodes.filter(
       (node) => reachable.has(node.id)
         && node.type !== 'memory-node'
         && node.type !== 'research-area-node'
         && node.type !== 'research-companies-node'
+        && node.type !== 'strategy-node'
         && node.type !== 'trading-account-node',
     );
     const reachableIds = new Set([id, ...reachable]);
@@ -161,6 +187,7 @@ export function ResearchAreaNode({
       model_provider: primaryModel.model_provider as any,
       place_paper_orders: placePaperOrders,
       starting_budget: startingBudget,
+      strategy,
     });
   };
 

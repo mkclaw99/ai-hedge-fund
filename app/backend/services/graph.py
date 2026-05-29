@@ -222,6 +222,12 @@ def run_graph(
             "research_materials": research_materials,  # Research-area grounding for all agents
             "request": request,  # Pass the request for agent-specific model access
             "upstream_map": upstream_map or {},  # Wiring intent — drives upstream-prose injection
+            # Strategy node config (see schemas.StrategyConfig). The PM reads it as a
+            # ## Strategy Mandate block; the Trading Account enforces max_position_pct.
+            # None when no Strategy node is wired — the run behaves as before.
+            "strategy": (
+                request.strategy.model_dump() if request is not None and getattr(request, "strategy", None) else None
+            ),
         },
     }
 
@@ -309,6 +315,24 @@ def _place_paper_orders_for_decisions(decisions: dict, request) -> None:
         starting_budget = float(getattr(request, "starting_budget", None) or 0)
         available = min(starting_budget, buying_power) if starting_budget > 0 else buying_power
 
+        # Strategy node's hard cap on any single position (% of *portfolio_value*,
+        # not buying power — leverage shouldn't widen the cap). When set, no open
+        # is allowed to deploy more than this fraction of equity, regardless of
+        # what the budget-÷-N math would otherwise compute.
+        portfolio_value = float(account.get("portfolio_value") or account.get("equity") or 0)
+        max_position_pct = None
+        try:
+            strategy = getattr(request, "strategy", None)
+            if strategy is not None and getattr(strategy, "max_position_pct", None) is not None:
+                max_position_pct = float(strategy.max_position_pct)
+        except Exception:
+            max_position_pct = None
+        per_position_cap = (
+            (max_position_pct / 100.0) * portfolio_value
+            if max_position_pct and portfolio_value > 0
+            else None
+        )
+
         # Prices for opens (Alpaca market data, batched, paper creds OK).
         prices = (
             alpaca_paper.get_latest_prices(api_keys, [t for t, _, _ in opens]) if opens else {}
@@ -327,8 +351,14 @@ def _place_paper_orders_for_decisions(decisions: dict, request) -> None:
                 _safe_progress("trading_account", ticker, f"Skipped {action}: no latest price available")
                 continue
             allocation = per_position * confidence
+            # Apply Strategy's max-position cap (% of portfolio value). When the
+            # budget-÷-N math would deploy more, clamp to the cap and note it.
+            capped_note = ""
+            if per_position_cap is not None and allocation > per_position_cap:
+                capped_note = f" capped @{max_position_pct:g}% of portfolio (${per_position_cap:,.0f})"
+                allocation = per_position_cap
             qty = int(allocation // price)
-            debug = f"budget ${allocation:,.0f} × ${price:,.2f}/share → {qty}"
+            debug = f"budget ${allocation:,.0f} × ${price:,.2f}/share → {qty}{capped_note}"
             if qty <= 0:
                 _safe_progress("trading_account", ticker, f"Skipped {action}: {debug} (qty would be 0)")
                 continue
