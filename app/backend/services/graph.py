@@ -1,9 +1,12 @@
 import asyncio
 import json
+import logging
 import re
 import uuid
 from langchain_core.messages import HumanMessage
 from langgraph.graph import END, StateGraph
+
+logger = logging.getLogger(__name__)
 
 from app.backend.services.agent_service import create_agent_function
 from src.agents.portfolio_manager import portfolio_management_agent
@@ -132,7 +135,21 @@ def create_graph(graph_nodes: list, graph_edges: list) -> tuple[StateGraph, dict
     for analyst_id, portfolio_manager_id in direct_to_portfolio_managers.items():
         risk_manager_id = risk_manager_nodes[portfolio_manager_id]
         graph.add_edge(analyst_id, risk_manager_id)
-    
+
+    # Ensure each risk manager has at least one inbound edge. In a normal flow the
+    # analysts feed it (via the loop above). In a *replay-strategy* run the frontend
+    # sends only the PM in `graph_nodes` — no analysts, so no analyst→risk_manager
+    # edges, and the risk_manager would never fire. Adding start_node as a parent
+    # is safe in both modes: LangGraph fan-in waits for *all* parents, so when
+    # analysts are wired the rm still waits for them; when they're not, start is
+    # the only parent and rm fires immediately.
+    fed_risk_managers = {
+        risk_manager_nodes[pm_id] for pm_id in direct_to_portfolio_managers.values()
+    }
+    for risk_manager_id in risk_manager_nodes.values():
+        if risk_manager_id not in fed_risk_managers:
+            graph.add_edge("start_node", risk_manager_id)
+
     # Connect each risk manager to its corresponding portfolio manager
     for portfolio_manager_id, risk_manager_id in risk_manager_nodes.items():
         graph.add_edge(risk_manager_id, portfolio_manager_id)
@@ -203,6 +220,24 @@ def run_graph(
         if new:
             ingest_run(new, end_date=end_date, run_id=run_id, root=root)
 
+    # Replay-strategy mode: re-decide on cached analyst signals without re-running
+    # the LLM analyst layer. We hydrate `analyst_signals` straight from this flow's
+    # wiki so the PM sees the latest stances from prior runs. Falls back to an
+    # empty dict if the wiki is missing/empty — the PM will still run and hold,
+    # which is the right outcome for "no signals available".
+    seeded_signals: dict[str, dict] = {}
+    skip_analysts = bool(request is not None and getattr(request, "skip_analysts", False))
+    if skip_analysts and root is not None:
+        try:
+            from src.memory import read_latest_signals as _rls
+            seeded_signals = _rls(tickers, root=root) or {}
+            for agent_id, per_ticker in seeded_signals.items():
+                for t in per_ticker.keys():
+                    seen_signals.add((str(agent_id), str(t)))
+        except Exception as e:
+            logger.warning("replay-strategy: signal hydration failed (%s); PM will see empty signals", e)
+            seeded_signals = {}
+
     inputs = {
         "messages": [
             HumanMessage(content="Make trading decisions based on the provided data.")
@@ -212,7 +247,7 @@ def run_graph(
             "portfolio": portfolio,
             "start_date": start_date,
             "end_date": end_date,
-            "analyst_signals": {},
+            "analyst_signals": seeded_signals,
         },
         "metadata": {
             "show_reasoning": False,

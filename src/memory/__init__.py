@@ -12,6 +12,7 @@ from src.memory.ingest import (
     is_enabled,
     normalize_analyst_name,
     read_back,
+    read_latest_signals,
 )
 from src.memory.models import Insight, TickerContext
 from src.memory.store import WikiMemory
@@ -26,4 +27,5 @@ __all__ = [
     "is_enabled",
     "normalize_analyst_name",
     "read_back",
+    "read_latest_signals",
 ]

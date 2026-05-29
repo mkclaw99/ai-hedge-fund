@@ -1,9 +1,17 @@
-import { type NodeProps } from '@xyflow/react';
-import { Target } from 'lucide-react';
+import { useReactFlow, type NodeProps } from '@xyflow/react';
+import { Loader2, Play, Square, Target } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
+import { Button } from '@/components/ui/button';
 import { CardContent } from '@/components/ui/card';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { useNodeState } from '@/hooks/use-node-state';
+import { useFlowContext } from '@/contexts/flow-context';
+import { useLayoutContext } from '@/contexts/layout-context';
+import { useNodeContext } from '@/contexts/node-context';
+import { useFlowConnection } from '@/hooks/use-flow-connection';
+import { getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
+import { primaryAgentModel } from '@/lib/agent-models';
+import { getFlowMemory } from '@/services/memory-api';
 import { type StrategyNode as StrategyNodeT } from '../types';
 import { NodeShell } from './node-shell';
 
@@ -64,6 +72,100 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
   const [allowEtfs, setAllowEtfs] = useNodeState<boolean>(id, 'allowEtfs', false);
   const [note, setNote] = useNodeState<string>(id, 'note', '');
 
+  // Replay-strategy wiring: re-run the PM on cached analyst signals from the
+  // flow's wiki without re-running analysts (no LLM analyst calls, no theme
+  // resolve). Only enabled when there's prior memory to replay.
+  const { currentFlowId } = useFlowContext();
+  const { getAllAgentModels } = useNodeContext();
+  const { getNodes } = useReactFlow();
+  const { setBottomPanelTab, expandBottomPanel } = useLayoutContext();
+  const flowId = currentFlowId?.toString() || null;
+  const { canRun, isProcessing, runFlow, stopFlow } = useFlowConnection(flowId);
+  const [memoryTickers, setMemoryTickers] = useState<string[]>([]);
+  const [replayError, setReplayError] = useState<string | null>(null);
+
+  // Refresh cached-ticker list when this flow comes into focus or when a
+  // run finishes (`isProcessing` going false). Cheap call (one fetch).
+  useEffect(() => {
+    let cancelled = false;
+    if (currentFlowId == null) {
+      setMemoryTickers([]);
+      return;
+    }
+    getFlowMemory(Number(currentFlowId))
+      .then((mem) => {
+        if (cancelled) return;
+        setMemoryTickers((mem.tickers || []).map((t) => t.ticker).filter(Boolean));
+      })
+      .catch(() => setMemoryTickers([]));
+    return () => { cancelled = true; };
+  }, [currentFlowId, isProcessing]);
+
+  const noMemory = memoryTickers.length === 0;
+  const replayDisabled = !canRun || noMemory;
+
+  const handleReplay = () => {
+    setReplayError(null);
+    const allNodes = getNodes();
+    const pmNode = allNodes.find((n) => n.type === 'portfolio-manager-node');
+    if (!pmNode) {
+      setReplayError('No Portfolio Manager in the flow.');
+      return;
+    }
+    if (memoryTickers.length === 0) {
+      setReplayError('No cached signals — run the full flow at least once first.');
+      return;
+    }
+    // Trading Account node — same opt-in / budget read as the full-flow handlePlay.
+    const tradingNode = allNodes.find((n) => n.type === 'trading-account-node');
+    const tradingState = (tradingNode ? getNodeInternalState(tradingNode.id) : null) as any;
+    const placePaperOrders = !!tradingState?.autoTrade;
+    const startingBudget = Number(tradingState?.startingBudget ?? 0) || undefined;
+
+    // Use only the PM's model — analysts won't run, so their model picks are irrelevant.
+    const allAgentModels = getAllAgentModels(flowId);
+    const pmModel = allAgentModels[pmNode.id];
+    const agentModels = pmModel
+      ? [{ agent_id: pmNode.id, model_name: pmModel.model_name, model_provider: pmModel.provider as any }]
+      : [];
+    const primary = primaryAgentModel(agentModels);
+
+    const numOrNull = (v: any) => {
+      const x = parseFloat(v);
+      return Number.isFinite(x) ? x : undefined;
+    };
+    const strategy = {
+      style: style || undefined,
+      sizing_rule: sizingRule || undefined,
+      max_position_pct: numOrNull(maxPositionPct),
+      max_sector_pct: numOrNull(maxSectorPct),
+      holding_period: holdingPeriod || undefined,
+      stop_loss_pct: numOrNull(stopLossPct),
+      take_profit_pct: numOrNull(takeProfitPct),
+      allow_stocks: allowStocks !== false,
+      allow_options: !!allowOptions,
+      allow_etfs: !!allowEtfs,
+      note: note || undefined,
+    };
+
+    expandBottomPanel();
+    setBottomPanelTab('output');
+
+    runFlow({
+      tickers: memoryTickers,
+      // Only the PM node — analysts are skipped (signals come from the wiki).
+      graph_nodes: [{ id: pmNode.id, type: pmNode.type, data: pmNode.data, position: pmNode.position }],
+      graph_edges: [],
+      agent_models: agentModels,
+      model_name: primary.model_name,
+      model_provider: primary.model_provider as any,
+      place_paper_orders: placePaperOrders,
+      starting_budget: startingBudget,
+      strategy,
+      skip_analysts: true,
+    });
+  };
+
   const ToggleRow = ({
     on, onChange, label, tooltip, badge,
   }: { on: boolean; onChange: (v: boolean) => void; label: string; tooltip: string; badge?: string }) => (
@@ -114,6 +216,46 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
         <CardContent className="p-0">
           <div className="border-t border-border p-3">
             <div className="flex flex-col gap-4">
+
+              {/* Replay strategy — re-runs the PM on cached analyst signals from
+                  the wiki, so changing strategy params doesn't require re-running
+                  the whole analyst layer. Disabled when no prior memory exists
+                  for this flow (you need at least one full run first). */}
+              <div className="flex flex-col gap-1">
+                <Tooltip delayDuration={200}>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="default"
+                      disabled={replayDisabled}
+                      onClick={isProcessing ? stopFlow : handleReplay}
+                      className="nodrag w-full justify-center gap-2"
+                      aria-label="Re-run strategy on cached signals"
+                    >
+                      {isProcessing ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Running — click to stop
+                        </>
+                      ) : (
+                        <>
+                          <Play className="h-3.5 w-3.5" />
+                          Re-run strategy only
+                        </>
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-xs">
+                    {noMemory
+                      ? 'Run the full flow at least once first — no cached analyst signals to replay yet.'
+                      : `Re-decide on the ${memoryTickers.length} cached ticker${memoryTickers.length === 1 ? '' : 's'} using these strategy params. Skips the analyst layer entirely — no LLM analyst calls, no theme re-research. Only the PM (and Risk Manager) run.`}
+                  </TooltipContent>
+                </Tooltip>
+                {replayError && (
+                  <div className="text-xs text-red-500">{replayError}</div>
+                )}
+              </div>
 
               {/* Style + sizing rule */}
               <div className="grid grid-cols-2 gap-3">
