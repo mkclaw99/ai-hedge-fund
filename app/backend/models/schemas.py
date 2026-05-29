@@ -128,6 +128,26 @@ class BacktestResponse(BaseModel):
     final_portfolio: Dict[str, Any]
 
 
+class StrategyConfig(BaseModel):
+    """Trading strategy declared by a Strategy node — read by the PM, partially
+    enforced by the Trading Account when placing paper orders.
+
+    Every field is optional so the model survives schema evolution; missing
+    fields fall back to "no preference" rather than crashing the run.
+    """
+    style: Optional[str] = None  # value | growth | momentum | mean_reversion | event_driven | income
+    sizing_rule: Optional[str] = None  # equal_weight | conviction_weighted | risk_parity | fixed_dollar
+    max_position_pct: Optional[float] = None  # cap on any single position as % of portfolio
+    max_sector_pct: Optional[float] = None  # cap on any single sector as % of portfolio (LLM-honoured)
+    holding_period: Optional[str] = None  # day | swing | position | long_term
+    stop_loss_pct: Optional[float] = None  # exit threshold below entry (optional)
+    take_profit_pct: Optional[float] = None  # exit threshold above entry (optional)
+    allow_stocks: bool = True
+    allow_options: bool = False
+    allow_etfs: bool = False
+    note: Optional[str] = None  # free-text mandate the PM reads verbatim
+
+
 class HedgeFundRequest(BaseHedgeFundRequest):
     end_date: Optional[str] = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
     start_date: Optional[str] = None
@@ -149,6 +169,9 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     # BUY/SHORT orders are sized to (min(starting_budget, buying_power) / N_open_actions) ×
     # (confidence/100) ÷ price. If unset, the run uses the account's buying_power directly.
     starting_budget: Optional[float] = None
+    # Strategy node config — declares trading rules (style, sizing, caps, instruments,
+    # free-text mandate). Read by the PM; the Trading Account enforces max_position_pct.
+    strategy: Optional[StrategyConfig] = None
 
     def get_start_date(self) -> str:
         """Calculate start date if not provided"""

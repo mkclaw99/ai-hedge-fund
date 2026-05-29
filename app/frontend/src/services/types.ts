@@ -60,6 +60,21 @@ export interface HedgeFundRequest extends BaseHedgeFundRequest {
   research_schedule?: string; // off | daily | weekly
   place_paper_orders?: boolean; // submit PM decisions to Alpaca PAPER (opt-in via Trading Account node)
   starting_budget?: number;     // Trading Account node's Starting Budget (drives budget-aware sizing)
+  strategy?: StrategyConfig;    // Strategy node config — style, sizing, caps, instruments, mandate
+}
+
+export interface StrategyConfig {
+  style?: string;             // value | growth | momentum | mean_reversion | event_driven | income
+  sizing_rule?: string;       // equal_weight | conviction_weighted | risk_parity | fixed_dollar
+  max_position_pct?: number;  // % of portfolio
+  max_sector_pct?: number;    // % of portfolio (LLM-honoured)
+  holding_period?: string;    // day | swing | position | long_term
+  stop_loss_pct?: number;
+  take_profit_pct?: number;
+  allow_stocks?: boolean;
+  allow_options?: boolean;
+  allow_etfs?: boolean;
+  note?: string;              // free-text mandate
 }
 
 export interface BacktestRequest extends BaseHedgeFundRequest {

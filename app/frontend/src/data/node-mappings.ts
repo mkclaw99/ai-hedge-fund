@@ -125,6 +125,18 @@ const baseNodeTypeDefinitions: Record<string, NodeTypeDefinition> = {
       },
     }),
   },
+  "Strategy": {
+    createNode: (position: { x: number, y: number }): AppNode => ({
+      id: `strategy-node_${generateUniqueIdSuffix()}`,
+      type: "strategy-node",
+      position,
+      data: {
+        name: "Strategy",
+        description: "Declares the trading rules — style, sizing, position/sector caps, holding period, stop/take-profit, instrument universe (stocks/options/ETFs), and a free-text mandate. Read by the Portfolio Manager; the Trading Account enforces the position cap.",
+        status: "Idle",
+      },
+    }),
+  },
 };
 
 /**

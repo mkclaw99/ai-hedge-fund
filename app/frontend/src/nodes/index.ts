@@ -9,6 +9,7 @@ import { ResearchCompaniesNode } from './components/research-companies-node';
 import { PortfolioManagerNode } from './components/portfolio-manager-node';
 import { PortfolioStartNode } from './components/portfolio-start-node';
 import { StockAnalyzerNode } from './components/stock-analyzer-node';
+import { StrategyNode } from './components/strategy-node';
 import { TradingAccountNode } from './components/trading-account-node';
 import { type AppNode } from './types';
 
@@ -63,5 +64,6 @@ export const nodeTypes = {
   'portfolio-start-node': PortfolioStartNode,
   'portfolio-manager-node': PortfolioManagerNode,
   'stock-analyzer-node': StockAnalyzerNode,
+  'strategy-node': StrategyNode,
   'trading-account-node': TradingAccountNode,
 } satisfies NodeTypes;

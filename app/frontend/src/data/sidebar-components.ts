@@ -86,6 +86,7 @@ export const getComponentGroups = async (): Promise<ComponentGroup[]> => {
       iconColor: "text-green-500",
       description: "Terminal nodes that consume the analysts' signals to produce a decision.",
       items: [
+        { name: "Strategy", icon: Brain, description: "Declares the trading rules (style, sizing, caps, holding period, instrument universe, free-text mandate). Read by the PM; the Trading Account enforces the position cap." },
         { name: "Portfolio Manager", icon: Brain, description: "Aggregates every analyst's signal and makes the final buy / sell / hold decisions and position sizes." },
       ]
     },

@@ -219,7 +219,18 @@ def generate_trading_decision(
     root = flow_root(flow_slug)
     prior = read_back(tickers_for_llm, root=root) if root else ""
 
-    # Minimal prompt template
+    # Strategy node config — declares trading rules (style, sizing, caps, etc.).
+    # When wired, the PM reads it as part of its mandate. When absent, an
+    # empty block is rendered and the PM uses default behaviour (back-compat).
+    strategy = (state.get("metadata", {}) or {}).get("strategy")
+    strategy_block = _render_strategy_block(strategy)
+
+    # Derivatives — when the Strategy node enables options, fetch a compact
+    # per-ticker options summary from Alpaca and inject it. Fail-open: any
+    # data problem renders a one-line "no derivatives" note.
+    derivatives_block = _render_derivatives_block(strategy, tickers_for_llm, state)
+
+    # Minimal prompt template — now with Strategy + Derivatives slots.
     template = ChatPromptTemplate.from_messages(
         [
             (
@@ -228,6 +239,11 @@ def generate_trading_decision(
                 "Inputs per ticker: analyst signals and allowed actions with max qty (already validated).\n"
                 "You may also receive prior accumulated research from earlier runs as background — "
                 "weigh it, but the current signals take precedence.\n"
+                "If a `## Strategy Mandate` block is present, follow it: it sets your trading style, "
+                "sizing rule, caps, holding period, and which instruments you may consider. "
+                "If a `## Derivatives` block is present (options enabled), you may reason about "
+                "option-based positions, but **only place stock orders for now** (option order routing "
+                "is not yet wired). Use derivative info as context — e.g. high IV suggests selling vol.\n"
                 "Pick one allowed action per ticker and a quantity ≤ the max. "
                 "Keep reasoning very concise (max 100 chars). No cash or margin math. Return JSON only."
             ),
@@ -236,6 +252,7 @@ def generate_trading_decision(
                 "Signals:\n{signals}\n\n"
                 "Allowed:\n{allowed}\n\n"
                 "Prior research:\n{prior}\n\n"
+                "{strategy}{derivatives}"
                 "Format:\n"
                 "{{\n"
                 '  "decisions": {{\n'
@@ -250,6 +267,8 @@ def generate_trading_decision(
         "signals": json.dumps(compact_signals, separators=(",", ":"), ensure_ascii=False),
         "allowed": json.dumps(compact_allowed, separators=(",", ":"), ensure_ascii=False),
         "prior": prior or "(none on record)",
+        "strategy": strategy_block,
+        "derivatives": derivatives_block,
     }
     prompt = template.invoke(prompt_data)
 
@@ -275,3 +294,73 @@ def generate_trading_decision(
     merged = dict(prefilled_decisions)
     merged.update(llm_out.decisions)
     return PortfolioManagerOutput(decisions=merged)
+
+
+def _render_strategy_block(strategy):
+    """Format a StrategyConfig dict into a Markdown `## Strategy Mandate` block for
+    the PM prompt. Empty string when no Strategy node was wired."""
+    if not isinstance(strategy, dict):
+        return ""
+    bits: list[str] = ["## Strategy Mandate", ""]
+    style = strategy.get("style")
+    sizing = strategy.get("sizing_rule")
+    if style or sizing:
+        line = []
+        if style:
+            line.append(f"**Style:** {style.replace('_', ' ')}")
+        if sizing:
+            line.append(f"**Sizing:** {sizing.replace('_', ' ')}")
+        bits.append("  ·  ".join(line))
+    if strategy.get("max_position_pct") is not None:
+        bits.append(f"**Max position size:** {strategy['max_position_pct']}% of portfolio (enforced by Trading Account)")
+    if strategy.get("max_sector_pct") is not None:
+        bits.append(f"**Max sector concentration:** {strategy['max_sector_pct']}% of portfolio (honour this in your decisions)")
+    if strategy.get("holding_period"):
+        bits.append(f"**Holding period:** {strategy['holding_period'].replace('_', ' ')}")
+    if strategy.get("stop_loss_pct") is not None:
+        bits.append(f"**Stop loss:** {strategy['stop_loss_pct']}% below entry (annotate sells when triggered)")
+    if strategy.get("take_profit_pct") is not None:
+        bits.append(f"**Take profit:** {strategy['take_profit_pct']}% above entry (annotate sells when triggered)")
+    allowed_inst = []
+    if strategy.get("allow_stocks", True):
+        allowed_inst.append("stocks")
+    if strategy.get("allow_options"):
+        allowed_inst.append("options (data injected below; order placement TBD)")
+    if strategy.get("allow_etfs"):
+        allowed_inst.append("related ETFs (hint only — no discovery API)")
+    if allowed_inst:
+        bits.append(f"**Allowed instruments:** {', '.join(allowed_inst)}")
+    note = (strategy.get("note") or "").strip()
+    if note:
+        bits.append("")
+        bits.append("**Strategy note (verbatim):**")
+        bits.append(f"> {note}")
+    bits.append("")
+    return "\n".join(bits)
+
+
+def _render_derivatives_block(strategy, tickers, state):
+    """When Strategy.allow_options is on, fetch per-ticker options summaries from
+    Alpaca and render a `## Derivatives` block for the PM. Fail-open."""
+    if not isinstance(strategy, dict) or not strategy.get("allow_options"):
+        return ""
+    try:
+        from app.backend.services.derivatives import get_options_summary, summarize_for_prompt
+    except Exception:
+        return ""
+    api_keys = None
+    try:
+        request = (state.get("metadata", {}) or {}).get("request")
+        if request and hasattr(request, "api_keys"):
+            api_keys = request.api_keys
+    except Exception:
+        api_keys = None
+    lines = ["## Derivatives (options) — chain summary per ticker", ""]
+    for t in tickers:
+        try:
+            summary = get_options_summary(t, api_keys)
+            lines.append(summarize_for_prompt(summary, t))
+        except Exception:
+            lines.append(f"- **{t}**: options summary unavailable")
+    lines.append("")
+    return "\n".join(lines)
