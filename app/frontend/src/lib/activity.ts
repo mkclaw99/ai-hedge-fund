@@ -64,7 +64,8 @@ function labelForRequest(url: string, method: string): string {
   if (url.includes('/hedge-fund/run')) return 'Running…';
   if (url.includes('/language-models') || url.includes('/hedge-fund/agents')) return 'Loading…';
   if (url.includes('/flows')) return m === 'GET' ? 'Loading flow…' : 'Saving…';
-  if (url.includes('/memory')) return 'Loading memory…';
+  if (url.includes('/memory/track-record')) return 'Loading track record…';
+  if (url.includes('/memory')) return 'Loading flow memory…';
   return m === 'GET' ? 'Loading…' : 'Working…';
 }
 

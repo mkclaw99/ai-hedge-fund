@@ -167,14 +167,19 @@ def compute_outcomes(
             continue
         if not ins:
             continue
-        # Newest first; cap per ticker.
+        # Newest first.
         ins.sort(key=lambda i: i.date, reverse=True)
-        ins = ins[:max_per_ticker]
-        by_ticker_insights[t] = ins
+        # Use the full history when picking the price-fetch window — we want
+        # the cache key to stay stable across calls regardless of
+        # ``max_per_ticker`` (which is a display cap). A floating earliest
+        # date produces new cache keys on every change, and when the upstream
+        # API is unavailable (rate-limited, out of credits) those fresh keys
+        # silently return empty and the whole track record collapses.
         for i in ins:
             d = _parse_date(i.date)
             if d is not None and (earliest is None or d < earliest):
                 earliest = d
+        by_ticker_insights[t] = ins[:max_per_ticker]
 
     if not by_ticker_insights or earliest is None:
         return []
