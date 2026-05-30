@@ -144,6 +144,49 @@ export function TrackRecordDialog({ isOpen, onOpenChange, flowId, holdingPeriod 
                 )}
               </div>
 
+              {/* Mandatory Adjustments — auto-rules the PM is shown.
+                  This is what the PM is being told to do *imperatively* —
+                  the hit-rate tables below are the data that derived them. */}
+              {summary.rules && summary.rules.length > 0 && (
+                <section>
+                  <h3 className="text-base font-semibold text-primary mb-2 flex items-center gap-2">
+                    Mandatory Adjustments
+                    <span className="text-muted-foreground text-sm font-normal">
+                      (auto-derived rules the PM must follow)
+                    </span>
+                  </h3>
+                  <div className="rounded-md border border-border bg-node/40 p-3 space-y-2">
+                    {summary.rules.map((r, i) => {
+                      // Colour the chip by rule kind: lone-winner is the most
+                      // actionable contrarian signal, down/up weight are direct
+                      // adjustments to a single (analyst, ticker) cell.
+                      const chipClass =
+                        r.kind === 'lone_winner'
+                          ? 'bg-amber-500/15 text-amber-500 border-amber-500/30'
+                          : r.kind === 'up_weight'
+                            ? 'bg-emerald-500/15 text-emerald-500 border-emerald-500/30'
+                            : 'bg-red-500/15 text-red-500 border-red-500/30';
+                      const label =
+                        r.kind === 'lone_winner' ? 'LONE WINNER' : r.kind === 'up_weight' ? 'TRUST' : 'DOWN-WEIGHT';
+                      return (
+                        <div key={i} className="flex items-start gap-3 text-sm">
+                          <span
+                            className={cn(
+                              'inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-semibold tracking-wide whitespace-nowrap mt-0.5',
+                              chipClass,
+                            )}
+                            title={`${r.n} closed calls · ${r.hit_rate.toFixed(1)}% weighted`}
+                          >
+                            {label}
+                          </span>
+                          <span className="text-primary leading-snug">{r.text}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+
               {/* Per-analyst */}
               {Object.keys(summary.analysts).length > 0 && (
                 <section>
