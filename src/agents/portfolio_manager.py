@@ -9,6 +9,7 @@ from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
 from src.memory import flow_root, read_back
+from src.memory.ingest import normalize_analyst_name
 
 
 class PortfolioDecision(BaseModel):
@@ -171,19 +172,51 @@ def compute_allowed_actions(
     return allowed
 
 
-def _compact_signals(signals_by_ticker: dict[str, dict]) -> dict[str, dict]:
-    """Keep only {agent: {sig, conf}} and drop empty agents."""
-    out = {}
+def _compact_signals(
+    signals_by_ticker: dict[str, dict],
+    *,
+    calibrations: dict | None = None,
+) -> dict[str, dict]:
+    """Keep only ``{agent: {sig, conf, [cal_conf, hit_rate, n]}}`` and drop empty agents.
+
+    When ``calibrations`` is provided (a ``{(analyst_name, ticker): (rate, n)}``
+    dict from :func:`src.memory.track_record.confidence_calibrations`), each
+    signal is enriched with the *effective* confidence after applying the
+    historical hit rate as a Bayesian-smoothed multiplier — and the original
+    raw confidence stays in ``conf`` so the PM can see both. Signals on
+    (analyst, ticker) pairs without enough data simply have no calibration
+    fields; the PM falls back to the raw number as usual.
+
+    Why both fields rather than overwriting: the analyst memo the PM also
+    reads is keyed on the analyst's own self-reported confidence; if we
+    secretly mutated the number, the memo's "I'm 85% confident" would no
+    longer match the JSON's ``conf=20``, which is confusing both for the
+    LLM and for a human reading the prompt during debugging. Two fields,
+    one truth.
+    """
+    out: dict[str, dict] = {}
     for t, agents in signals_by_ticker.items():
         if not agents:
             out[t] = {}
             continue
-        compact = {}
+        compact: dict[str, dict] = {}
         for agent, payload in agents.items():
             sig = payload.get("sig") or payload.get("signal")
             conf = payload.get("conf") if "conf" in payload else payload.get("confidence")
-            if sig is not None and conf is not None:
-                compact[agent] = {"sig": sig, "conf": conf}
+            if sig is None or conf is None:
+                continue
+            entry: dict = {"sig": sig, "conf": int(conf)}
+            if calibrations is not None:
+                analyst_name = normalize_analyst_name(agent)
+                pair = calibrations.get((analyst_name, t))
+                if pair is not None:
+                    rate, n = pair
+                    cal_conf = max(0, min(100, int(round(int(conf) * rate))))
+                    if cal_conf != int(conf):
+                        entry["cal_conf"] = cal_conf
+                        entry["hist_rate"] = round(rate * 100, 1)
+                        entry["hist_n"] = n
+            compact[agent] = entry
         out[t] = compact
     return out
 
@@ -218,8 +251,33 @@ def generate_trading_decision(
     if not tickers_for_llm:
         return PortfolioManagerOutput(decisions=prefilled_decisions)
 
+    # ------------------------------------------------------------------
+    # Closing the track-record → PM learning loop.
+    #
+    # We compute the per-(analyst, ticker) outcomes ONCE up here and reuse
+    # them three ways:
+    #   (1) confidence calibration — rewrite each analyst's confidence
+    #       in the signals JSON the PM consumes (raw conf stays alongside).
+    #   (2) Mandatory Adjustments block — imperative rules ("Down-weight
+    #       X on Y", "SIDE WITH lone winner Z") rendered into the prompt.
+    #   (3) Track Record block — the existing W/L/OPEN rollup the PM
+    #       already reads for general calibration.
+    # All three share the same outcomes list to keep the picture consistent
+    # — there is exactly one source of truth for "what's happened so far."
+    # ------------------------------------------------------------------
+    strategy = (state.get("metadata", {}) or {}).get("strategy")
+    outcomes = _compute_outcomes_for_pm(strategy, tickers_for_llm, state)
+
+    # Confidence calibrations are O(outcomes) to build once and O(1) per
+    # lookup during signal compaction.
+    from src.memory.track_record import confidence_calibrations as _confidence_calibrations
+    calibrations = _confidence_calibrations(outcomes) if outcomes else {}
+
     # Build compact payloads only for tickers sent to LLM
-    compact_signals = _compact_signals({t: signals_by_ticker.get(t, {}) for t in tickers_for_llm})
+    compact_signals = _compact_signals(
+        {t: signals_by_ticker.get(t, {}) for t in tickers_for_llm},
+        calibrations=calibrations,
+    )
     compact_allowed = {t: allowed_actions_full[t] for t in tickers_for_llm}
 
     # Read-back: the full cross-analyst history for this flow, including the PM's
@@ -235,7 +293,6 @@ def generate_trading_decision(
     # Strategy node config — declares trading rules (style, sizing, caps, etc.).
     # When wired, the PM reads it as part of its mandate. When absent, an
     # empty block is rendered and the PM uses default behaviour (back-compat).
-    strategy = (state.get("metadata", {}) or {}).get("strategy")
     strategy_block = _render_strategy_block(strategy)
 
     # Derivatives — when the Strategy node enables options, fetch a compact
@@ -243,12 +300,20 @@ def generate_trading_decision(
     # data problem renders a one-line "no derivatives" note.
     derivatives_block = _render_derivatives_block(strategy, tickers_for_llm, state)
 
-    # Track record — score past decisions against actual price moves and inject
-    # the result as a feedback signal. This is the "learn from your mistakes
-    # and successes" channel: the PM sees its own hit rate per analyst and per
-    # ticker over the strategy's holding period, so it can calibrate confidence
-    # against history. Empty string when the wiki has no insights yet.
-    track_record_block = _render_track_record_block(strategy, tickers_for_llm, state)
+    # Mandatory Adjustments — auto-generated imperative rules derived from
+    # (analyst, ticker) cells where the historical pattern is unambiguous
+    # (≥ 3 closed calls, ≥ 70% one way). These go ABOVE the Track Record
+    # block in the prompt so the PM reads the actionable instructions
+    # before the raw stats.
+    from src.memory.track_record import derive_pm_rules, render_pm_rules_block, render_track_record_block
+    pm_rules = derive_pm_rules(outcomes) if outcomes else []
+    rules_block = render_pm_rules_block(pm_rules)
+
+    # Track record — the broader W/L/OPEN rollup. Same outcomes list as the
+    # rules block, so the rules and the stats agree by construction.
+    track_record_block = render_track_record_block(outcomes) if outcomes else ""
+    if track_record_block:
+        track_record_block = track_record_block + "\n"
 
     # Add option actions to every ticker's allowed set when Strategy permits
     # options. Each contract = 100 shares of underlying exposure; cap qty at a
@@ -266,22 +331,32 @@ def generate_trading_decision(
     # Refresh the compact view after option enrichment.
     compact_allowed = {t: allowed_actions_full[t] for t in tickers_for_llm if t in allowed_actions_full}
 
-    # Minimal prompt template — now with Strategy + Derivatives slots.
+    # Minimal prompt template — Strategy + Derivatives + Rules + Track Record slots.
     template = ChatPromptTemplate.from_messages(
         [
             (
                 "system",
                 "You are a portfolio manager.\n"
                 "Inputs per ticker: analyst signals and allowed actions with max qty (already validated).\n"
+                "Signal fields:\n"
+                "  • `sig`    — the analyst's directional call (bullish / bearish / neutral).\n"
+                "  • `conf`   — the analyst's self-reported confidence (0-100).\n"
+                "  • `cal_conf` (when present) — the same confidence AFTER reweighting by the "
+                "analyst's HISTORICAL hit rate on this ticker. Treat `cal_conf` as the operative "
+                "value when present; the unweighted `conf` is shown for context only.\n"
+                "  • `hist_rate` / `hist_n` — the hit rate and sample size behind `cal_conf`.\n"
                 "You may also receive prior accumulated research from earlier runs as background — "
                 "weigh it, but the current signals take precedence.\n"
                 "If a `## Strategy Mandate` block is present, follow it: it sets your trading style, "
                 "sizing rule, caps, holding period, and which instruments you may consider.\n"
+                "If a `## Mandatory Adjustments Based on Past Performance` block is present, those "
+                "rules were derived MECHANICALLY from the (analyst, ticker) cells where the "
+                "historical pattern is unambiguous. Follow them. They override your usual instinct "
+                "to weight every analyst equally.\n"
                 "If a `## Track Record` block is present, it shows how your past calls actually "
                 "played out (closed WIN/LOSS + still-OPEN positions, per-analyst hit rates). "
-                "Use it to calibrate: where you've been overconfident, which analysts misfire on "
-                "which tickers. Don't slavishly follow it — but if today's signals contradict a "
-                "strong historical pattern, weigh the pattern.\n"
+                "Use it to calibrate further. When today's signals contradict a strong historical "
+                "pattern, weigh the pattern.\n"
                 "If a `## Derivatives` block is present (options enabled), you may also place OPTION "
                 "orders on the underlying tickers:\n"
                 "  • `buy_call` / `buy_put` — buy-to-open (cost ≈ ask × 100 × qty).\n"
@@ -298,7 +373,7 @@ def generate_trading_decision(
                 "Signals:\n{signals}\n\n"
                 "Allowed:\n{allowed}\n\n"
                 "Prior research:\n{prior}\n\n"
-                "{strategy}{derivatives}{track_record}"
+                "{strategy}{derivatives}{rules}{track_record}"
                 "Format:\n"
                 "{{\n"
                 '  "decisions": {{\n'
@@ -315,6 +390,7 @@ def generate_trading_decision(
         "prior": prior or "(none on record)",
         "strategy": strategy_block,
         "derivatives": derivatives_block,
+        "rules": rules_block + ("\n" if rules_block else ""),
         "track_record": track_record_block,
     }
     prompt = template.invoke(prompt_data)
@@ -413,38 +489,39 @@ def _render_derivatives_block(strategy, tickers, state):
     return "\n".join(lines)
 
 
-def _render_track_record_block(strategy, tickers, state):
-    """Score past decisions against actual price moves and render the result.
+def _compute_outcomes_for_pm(strategy, tickers, state):
+    """Compute per-(analyst, ticker) historical outcomes for the PM.
 
-    Reads insights from the flow's wiki (per-flow scope already enforced by
-    `flow_root(flow_slug)`), looks up prices for each ticker via the cached
-    Financial Datasets API, and computes WIN/LOSS/OPEN per past insight at the
-    Strategy node's holding-period horizon. Empty string when the wiki has no
-    history yet or anything goes wrong — the PM degrades to "no track record"
-    rather than crashing.
+    Single source of truth, shared by:
+      * the confidence-calibration lookup (rewrites signals JSON),
+      * the Mandatory Adjustments rule block (imperative directives), and
+      * the Track Record stats block (per-analyst rollup).
+
+    Returns ``[]`` when there is no flow-scoped wiki, no tickers, or any
+    error along the way. Fail-open: the PM degrades to "no track record"
+    rather than crashing, exactly as before — but now there is one call to
+    ``compute_outcomes`` per PM invocation instead of two (the previous
+    code recomputed inside ``_render_track_record_block``).
     """
     try:
         from src.memory import flow_root
         from src.memory.track_record import (
             compute_outcomes,
             holding_days_from_strategy,
-            render_track_record_block,
         )
 
         flow_slug = (state.get("metadata", {}) or {}).get("flow_slug")
         root = flow_root(flow_slug)
         if not root or not tickers:
-            return ""
+            return []
         api_keys = None
         request = (state.get("metadata", {}) or {}).get("request")
         if request and hasattr(request, "api_keys"):
             api_keys = request.api_keys
-        outcomes = compute_outcomes(
+        return compute_outcomes(
             tickers, root,
             api_keys=api_keys,
             holding_days=holding_days_from_strategy(strategy),
         )
-        block = render_track_record_block(outcomes)
-        return block + ("\n" if block else "")
     except Exception:
-        return ""
+        return []

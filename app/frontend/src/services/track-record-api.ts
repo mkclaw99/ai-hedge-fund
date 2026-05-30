@@ -32,6 +32,20 @@ export interface AnalystTickerCell extends AnalystRollup {
   ticker: string;
 }
 
+// Mandatory Adjustment rule the PM is shown — derived mechanically from
+// the (analyst, ticker) cells where the historical pattern is unambiguous
+// (≥ 3 closed calls, ≥ 70% one way). Lone-winner rules surface contrarian
+// signals: on a ticker where multiple analysts have been wrong, the one
+// who's been right gets called out.
+export interface TrackRecordRule {
+  kind: 'down_weight' | 'up_weight' | 'lone_winner';
+  analyst: string;
+  ticker: string;
+  n: number;
+  hit_rate: number;
+  text: string;
+}
+
 export interface TrackRecordSummary {
   overall: {
     wins: number;
@@ -43,6 +57,7 @@ export interface TrackRecordSummary {
   analysts: Record<string, AnalystRollup>;
   analyst_tickers: AnalystTickerCell[];
   recent: TrackRecordRow[];
+  rules?: TrackRecordRule[];
 }
 
 export interface TrackRecordResponse {
@@ -65,7 +80,7 @@ export async function getTrackRecord(
     return {
       flow_id: flowId,
       holding_days: 30,
-      summary: { overall: { wins: 0, losses: 0, open: 0, hit_rate: 0, hit_rate_weighted: 0 }, analysts: {}, analyst_tickers: [], recent: [] },
+      summary: { overall: { wins: 0, losses: 0, open: 0, hit_rate: 0, hit_rate_weighted: 0 }, analysts: {}, analyst_tickers: [], recent: [], rules: [] },
     };
   }
 }

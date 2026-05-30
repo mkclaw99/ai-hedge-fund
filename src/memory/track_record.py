@@ -395,15 +395,231 @@ def render_track_record_block(outcomes, *, max_rows: int = 15, today: Optional[_
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Closing the learning loop: turn observable outcomes into ACTIONABLE inputs
+# for the PM.
+#
+# The Track Record block alone tells the PM "Valuation Analyst is 0/7 on COHR"
+# but the PM still tends to weight Valuation's bearish call — LLMs are bad at
+# consuming raw stats and applying them as constraints. The two functions
+# below close that gap by translating the same data into shapes the PM can
+# act on:
+#
+#  * ``derive_pm_rules`` produces explicit imperative rules ("Down-weight
+#    Valuation Analyst on COHR") that get rendered into the prompt as a
+#    Mandatory Adjustments block — LLMs follow imperative bullets much
+#    better than they apply tables.
+#  * ``confidence_calibrations`` builds a lookup from past hit rate to
+#    a Bayesian-smoothed effective rate that we use to rewrite each
+#    analyst's reported confidence at PM aggregation time — so the
+#    signals JSON the PM sees already reflects history, not just the
+#    analyst's self-reported number.
+#
+# Both are derived from the same ``outcomes`` list and intended to be used
+# together: rules tell the PM what to do, calibration makes sure the
+# inputs that survive into the decision agree with the rules.
+# ---------------------------------------------------------------------------
+
+# Bayesian smoothing for small-sample calibration. With α=4 and a prior of
+# 0.5, a 0/2 cell yields effective rate 0.33 (not 0); a 0/7 cell yields 0.18;
+# a 7/0 cell yields 0.82. The prior dominates at low n; the data dominates
+# as n grows. Picked to be forgiving — we never want a single ticker's worth
+# of bad luck to permanently silence an analyst.
+_CAL_PRIOR = 0.5
+_CAL_ALPHA = 4
+# Minimum sample size before we surface a (analyst, ticker) cell as a *rule*
+# (rules are imperative; we want them grounded in real signal). Calibration
+# uses a lower threshold (min_n=2) because confidence rewriting fades to a
+# no-op smoothly via the Bayesian prior anyway.
+_RULE_MIN_N = 3
+_CAL_MIN_N = 2
+
+# How "lopsided" a cell has to be to become a rule. Weighted hit-rate
+# thresholds; below ``_LOSS_PCT`` we emit a down-weight rule, above
+# ``_WIN_PCT`` an up-weight rule. The 30/70 band leaves a wide "noisy
+# middle" alone — we only call out cells where the signal is unambiguous.
+_LOSS_PCT = 30
+_WIN_PCT = 70
+
+
+def derive_pm_rules(
+    outcomes,
+    *,
+    today: Optional[_date] = None,
+    min_n: int = _RULE_MIN_N,
+    loss_pct: float = _LOSS_PCT,
+    win_pct: float = _WIN_PCT,
+) -> list[dict]:
+    """Generate imperative rules from per-(analyst, ticker) outcomes.
+
+    Each rule is a dict ``{kind, analyst, ticker, n, hit_rate, text}`` where
+    ``kind`` is one of ``"down_weight"``, ``"up_weight"``, ``"lone_winner"``.
+    The ``text`` field is the markdown bullet the PM prompt renders verbatim;
+    it uses imperative language ("DO NOT", "SIDE WITH IT") because that's
+    what LLMs follow.
+
+    No rules are emitted when nothing crosses the lopsidedness threshold —
+    a returning empty list is correct, not a degenerate state.
+    """
+    at = analyst_ticker_hit_rates(outcomes, today=today, min_n=min_n)
+    if not at:
+        return []
+    rules: list[dict] = []
+    for (analyst, ticker), cell in at.items():
+        if cell["n"] < min_n:
+            continue
+        hr = cell["hit_rate_weighted"]
+        if hr <= loss_pct:
+            rules.append({
+                "kind": "down_weight",
+                "analyst": analyst, "ticker": ticker,
+                "n": cell["n"], "hit_rate": hr,
+                "text": (
+                    f"**Down-weight {analyst} on {ticker}** — historical "
+                    f"{cell['wins']}W/{cell['losses']}L ({hr}% weighted). "
+                    f"When {analyst} is the sole source of a directional call on "
+                    f"{ticker}, DO NOT act on it alone — require corroboration "
+                    f"from at least one other analyst with a positive track record "
+                    f"on {ticker}."
+                ),
+            })
+        elif hr >= win_pct:
+            rules.append({
+                "kind": "up_weight",
+                "analyst": analyst, "ticker": ticker,
+                "n": cell["n"], "hit_rate": hr,
+                "text": (
+                    f"**Trust {analyst} on {ticker}** — historical "
+                    f"{cell['wins']}W/{cell['losses']}L ({hr}% weighted). "
+                    f"When {analyst} takes a strong directional view on {ticker}, "
+                    f"weight it heavily — even when other analysts disagree."
+                ),
+            })
+
+    # Detect lone-winner patterns: on a ticker where ≥ 2 analysts have been
+    # collectively wrong, if exactly one analyst has been right, that's a
+    # contrarian signal the PM should bias toward. From the 10-day backtest:
+    # Technical Analyst on COHR was 6W/0L while four value-style analysts were
+    # 0W/26L on the same ticker — the PM should side with Technical there.
+    by_ticker: dict[str, list[dict]] = {}
+    for r in rules:
+        by_ticker.setdefault(r["ticker"], []).append(r)
+    for ticker, ticker_rules in by_ticker.items():
+        winners = [r for r in ticker_rules if r["kind"] == "up_weight"]
+        losers = [r for r in ticker_rules if r["kind"] == "down_weight"]
+        if len(winners) == 1 and len(losers) >= 2:
+            w = winners[0]
+            loser_names = ", ".join(r["analyst"] for r in losers)
+            rules.append({
+                "kind": "lone_winner",
+                "analyst": w["analyst"], "ticker": ticker,
+                "n": w["n"], "hit_rate": w["hit_rate"],
+                "text": (
+                    f"**On {ticker}, only {w['analyst']} has been right** "
+                    f"({w['hit_rate']}% weighted) — {loser_names} have been "
+                    f"collectively wrong. If {w['analyst']} disagrees with the "
+                    f"consensus on {ticker}, SIDE WITH IT."
+                ),
+            })
+    # Sort: lone winners first (most actionable), then strong losers, then strong winners.
+    _order = {"lone_winner": 0, "down_weight": 1, "up_weight": 2}
+    rules.sort(key=lambda r: (_order.get(r["kind"], 99), -r["n"]))
+    return rules
+
+
+def render_pm_rules_block(rules) -> str:
+    """Markdown for the PM prompt. Empty string when there are no rules."""
+    if not rules:
+        return ""
+    lines: list[str] = []
+    lines.append("## Mandatory Adjustments Based on Past Performance")
+    lines.append("")
+    lines.append(
+        "Your past calls have been scored against actual price moves. The rules "
+        "below were derived mechanically from the (analyst, ticker) cells where "
+        "the historical pattern is unambiguous (≥ 3 closed calls, ≥ 70% one way). "
+        "Follow them. They are not suggestions — when today's signals contradict "
+        "a rule, weight the rule unless today's evidence is overwhelming."
+    )
+    lines.append("")
+    for r in rules:
+        lines.append(f"- {r['text']}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def confidence_calibrations(
+    outcomes,
+    *,
+    today: Optional[_date] = None,
+    min_n: int = _CAL_MIN_N,
+    alpha: int = _CAL_ALPHA,
+    prior: float = _CAL_PRIOR,
+) -> dict[tuple[str, str], tuple[float, int]]:
+    """Build a ``(analyst, ticker) -> (effective_rate, n)`` lookup for PM
+    confidence rewriting.
+
+    ``effective_rate`` is in ``[0, 1]``. Uses Bayesian smoothing so small
+    samples never collapse to 0 or 1: ``(wins + α·prior) / (n + α)``.
+    Cells with ``n < min_n`` are simply absent from the dict — callers
+    fall back to raw confidence.
+
+    Why a dict and not a function: the PM call processes O(tickers × analysts)
+    signals; a precomputed dict is O(1) per lookup instead of O(outcomes) per
+    lookup, and it lets us return the count ``n`` so the PM prompt can show
+    the user how much data backs each adjustment.
+    """
+    raw = _rollup(
+        outcomes,
+        group_key=lambda o: (o.get("analyst") or "?", o.get("ticker") or "?"),
+        today=today,
+    )
+    out: dict[tuple[str, str], tuple[float, int]] = {}
+    for (analyst, ticker), cell in raw.items():
+        if cell["n"] < min_n:
+            continue
+        rate = (cell["wins"] + alpha * prior) / (cell["n"] + alpha)
+        out[(analyst, ticker)] = (rate, cell["n"])
+    return out
+
+
+def calibrated_confidence(
+    analyst: str, ticker: str, raw_conf: float,
+    calibrations: dict[tuple[str, str], tuple[float, int]] | None,
+) -> tuple[int, Optional[float], Optional[int]]:
+    """Return ``(effective_conf_int, effective_rate_0to1 | None, n | None)``.
+
+    When we have calibration data for this ``(analyst, ticker)``, the
+    effective confidence is ``raw_conf * effective_rate`` clipped to
+    ``[0, 100]``. With no data, returns ``raw_conf`` unchanged and rate/n
+    as ``None`` so callers can branch on "did calibration apply?".
+    """
+    raw_int = max(0, min(100, int(round(raw_conf or 0))))
+    if not calibrations:
+        return (raw_int, None, None)
+    pair = calibrations.get((analyst, ticker))
+    if pair is None:
+        return (raw_int, None, None)
+    rate, n = pair
+    effective = max(0, min(100, int(round(raw_int * rate))))
+    return (effective, rate, n)
+
+
 def track_record_summary(outcomes, *, today: Optional[_date] = None) -> dict:
     """Structured summary for the frontend Track Record dialog — same data
-    the PM reads, but as JSON instead of Markdown. Empty when no outcomes."""
+    the PM reads, but as JSON instead of Markdown. Empty when no outcomes.
+
+    Includes ``rules`` so the UI can show the same Mandatory Adjustments the
+    PM is currently following. Users seeing a rule they disagree with can
+    intervene by reading the underlying cell or by overriding via UI flags.
+    """
     if not outcomes:
         return {
             "overall": {"wins": 0, "losses": 0, "open": 0, "hit_rate": 0.0, "hit_rate_weighted": 0.0},
             "analysts": {},
             "analyst_tickers": [],
             "recent": [],
+            "rules": [],
         }
     today = today or _date.today()
     rows = [o for o in outcomes if o.get("outcome") in ("WIN", "LOSS", "OPEN")]
@@ -428,4 +644,5 @@ def track_record_summary(outcomes, *, today: Optional[_date] = None) -> dict:
             for (a, t), cell in sorted(at.items(), key=lambda kv: -abs(kv[1]["hit_rate_weighted"] - 50))
         ],
         "recent": rows[:50],
+        "rules": derive_pm_rules(outcomes, today=today),
     }
