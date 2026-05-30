@@ -19,12 +19,16 @@ import {
   getPaperAccount,
   getPaperOrders,
   getPaperPositions,
+  getPortfolioHistory,
   PaperAccount,
   PaperOrder,
   PaperPosition,
+  PortfolioHistory,
+  PortfolioHistoryPeriod,
 } from '@/services/trading-api';
 import { Loader2, RotateCw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { EquityChart } from './equity-chart';
 
 const usd = (n?: number) =>
   typeof n === 'number'
@@ -54,6 +58,12 @@ export function TradingAccountDetailsDialog({ isOpen, onOpenChange }: Props) {
   const [positions, setPositions] = useState<PaperPosition[]>([]);
   const [orders, setOrders] = useState<PaperOrder[]>([]);
   const [loading, setLoading] = useState(false);
+  // Equity-over-time state — separate so changing the period doesn't
+  // re-fetch positions/orders. Period defaults to 1M, a reasonable
+  // "where am I lately" view that covers most paper-trading sessions.
+  const [history, setHistory] = useState<PortfolioHistory | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [period, setPeriod] = useState<PortfolioHistoryPeriod>('1M');
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -72,9 +82,24 @@ export function TradingAccountDetailsDialog({ isOpen, onOpenChange }: Props) {
     }
   }, []);
 
+  const refreshHistory = useCallback(async (p: PortfolioHistoryPeriod) => {
+    setHistoryLoading(true);
+    try {
+      setHistory(await getPortfolioHistory(p));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (isOpen) refresh();
   }, [isOpen, refresh]);
+
+  // Fetch history when the dialog opens or the period changes — keyed
+  // on `isOpen && period` so we don't refetch on every render.
+  useEffect(() => {
+    if (isOpen) refreshHistory(period);
+  }, [isOpen, period, refreshHistory]);
 
   // Ticker labels: "Coherent Corp (COHR)" across the dialog.
   const allSymbols = Array.from(
@@ -159,6 +184,90 @@ export function TradingAccountDetailsDialog({ isOpen, onOpenChange }: Props) {
               {stat('Status', (account.status || '—').toLowerCase())}
             </div>
           )}
+
+          {/* Performance over time — Alpaca's portfolio/history series, shown
+              as an inline-SVG equity curve. Period buttons change `period`
+              state which triggers a re-fetch via the dedicated effect. The
+              max-drawdown stat is computed client-side from the same samples
+              so the user can eyeball "worst loss from a peak" without the
+              backend computing it on every request. */}
+          {account?.connected && (() => {
+            const samples = history?.samples ?? [];
+            const startEq = samples[0]?.equity;
+            const endEq = samples[samples.length - 1]?.equity;
+            const baseEq = history?.base_value || startEq || 0;
+            const change = endEq != null && startEq != null ? endEq - startEq : undefined;
+            const changePct = change != null && startEq ? change / startEq : undefined;
+            // Max drawdown over the visible window — peak-to-trough as a
+            // negative percentage; matches how almost every broker shows it.
+            let peak = startEq ?? 0;
+            let maxDd = 0;
+            for (const s of samples) {
+              if (s.equity > peak) peak = s.equity;
+              const dd = peak > 0 ? (s.equity - peak) / peak : 0;
+              if (dd < maxDd) maxDd = dd;
+            }
+            const tone: 'pos' | 'neg' | 'muted' =
+              change == null ? 'muted' : change >= 0 ? 'pos' : 'neg';
+            return (
+              <section>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-base font-semibold text-primary flex items-center gap-2">
+                    Performance over time
+                    {historyLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+                  </h3>
+                  {/* Period selector — same options Alpaca supports.
+                      Tooltip explains each button so the user doesn't have
+                      to guess (matches the "self-explanatory UI" rule). */}
+                  <div className="flex items-center gap-1">
+                    {(['1D', '5D', '1M', '3M', '1A', 'all'] as PortfolioHistoryPeriod[]).map((p) => (
+                      <Button
+                        key={p}
+                        variant={period === p ? 'default' : 'outline'}
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        title={
+                          p === '1D' ? 'Today (hourly)' :
+                          p === '5D' ? 'Last 5 days (hourly)' :
+                          p === '1M' ? 'Last 1 month (daily)' :
+                          p === '3M' ? 'Last 3 months (daily)' :
+                          p === '1A' ? 'Last year (daily)' :
+                          'All time (daily)'
+                        }
+                        onClick={() => setPeriod(p)}
+                        disabled={historyLoading}
+                      >
+                        {p === 'all' ? 'All' : p}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Summary tiles: start / end / change / max drawdown */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 rounded-lg border border-border p-3 mb-3">
+                  {stat('Start', usd(startEq), 'muted')}
+                  {stat('Current', usd(endEq), 'normal')}
+                  {stat(
+                    'Change',
+                    change != null && changePct != null
+                      ? `${change >= 0 ? '+' : ''}${usd(Math.abs(change))} (${pct(changePct)})`
+                      : '—',
+                    tone,
+                  )}
+                  {stat(
+                    'Max drawdown',
+                    samples.length > 1 ? pct(maxDd) : '—',
+                    maxDd < 0 ? 'neg' : 'muted',
+                  )}
+                </div>
+
+                {/* The chart itself */}
+                <div className="rounded-md border border-border p-2 bg-node/40">
+                  <EquityChart samples={samples} baseValue={baseEq} />
+                </div>
+              </section>
+            );
+          })()}
 
           {/* Positions */}
           <section>

@@ -211,6 +211,73 @@ def get_latest_prices(api_keys: dict | None, tickers) -> dict:
         return {}
 
 
+def get_portfolio_history(
+    api_keys: dict | None,
+    *,
+    period: str = "1M",
+    timeframe: str | None = None,
+) -> dict:
+    """Equity time-series for the paper account.
+
+    Returns ``{connected, period, timeframe, base_value, samples}`` where
+    ``samples`` is ``[{ts, equity, profit_loss, profit_loss_pct}, ...]`` in
+    chronological order. Empty samples + ``connected=False`` on any failure.
+
+    Period strings understood by Alpaca: ``1D``, ``5D``, ``7D``, ``1M``,
+    ``3M``, ``6M``, ``1A``, ``5A``, ``all``. Timeframe defaults to ``1H``
+    for sub-week periods and ``1D`` otherwise — picked to keep the sample
+    count under a few hundred so the SVG chart stays cheap to draw.
+    """
+    h = _headers(api_keys)
+    if not h:
+        return {"connected": False, "paper": True, "samples": [], "period": period, "timeframe": timeframe or "1D"}
+    if timeframe is None:
+        timeframe = "1H" if period in ("1D", "5D", "7D") else "1D"
+    try:
+        r = requests.get(
+            f"{_PAPER_BASE}/account/portfolio/history",
+            headers=h,
+            params={"period": period, "timeframe": timeframe, "extended_hours": "false"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return {
+                "connected": False, "paper": True, "samples": [],
+                "period": period, "timeframe": timeframe,
+                "reason": f"Alpaca returned HTTP {r.status_code}",
+            }
+        body = r.json() or {}
+        timestamps = body.get("timestamp") or []
+        equity = body.get("equity") or []
+        pnl = body.get("profit_loss") or []
+        pnl_pct = body.get("profit_loss_pct") or []
+        base = _float(body.get("base_value"))
+        samples = []
+        for i, ts in enumerate(timestamps):
+            eq = equity[i] if i < len(equity) else None
+            if eq is None:
+                continue  # Alpaca pads with nulls during market closures
+            samples.append({
+                "ts": int(ts),                                # unix seconds
+                "equity": _float(eq),
+                "profit_loss": _float(pnl[i]) if i < len(pnl) else 0.0,
+                "profit_loss_pct": _float(pnl_pct[i]) if i < len(pnl_pct) else 0.0,
+            })
+        return {
+            "connected": True, "paper": True,
+            "period": period, "timeframe": timeframe,
+            "base_value": base,
+            "samples": samples,
+        }
+    except Exception as e:
+        logger.warning("alpaca paper /account/portfolio/history failed: %s", e)
+        return {
+            "connected": False, "paper": True, "samples": [],
+            "period": period, "timeframe": timeframe,
+            "reason": f"Could not reach paper-api: {e}",
+        }
+
+
 def get_orders(api_keys: dict | None, status: str = "all", limit: int = 50) -> list[dict]:
     """Recent paper-account orders (filled, open, cancelled, …). Empty on failure."""
     h = _headers(api_keys)
