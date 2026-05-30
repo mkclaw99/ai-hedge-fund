@@ -24,6 +24,13 @@ class Insight:
     reasoning: str
     date: str                    # analysis as-of date, YYYY-MM-DD
     run_id: str                  # groups all insights from one run
+    # Imperative rules that were in effect when this insight was written, as
+    # short tagged strings ("[lone_winner] Technical on COHR (n=4, 100%)").
+    # Only set on PM insights today — the analysts run before the PM and don't
+    # see rules. Empty list when no rules fired. Surfaced for per-day audit
+    # so a user can trace "what was the PM told to do, and what did it do?"
+    # without parsing reasoning prose.
+    rules_applied: list[str] = field(default_factory=list)
 
     def slug(self) -> str:
         """Stable file slug for this insight's immutable source page."""

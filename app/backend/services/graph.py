@@ -287,7 +287,17 @@ def run_graph(
             # Same isolation rule as `_ingest_new` — unsaved flows skip PM-decision
             # persistence so they can't bleed into another run's wiki.
             if root is not None:
-                ingest_decisions(decisions, end_date=end_date, run_id=run_id, root=root)
+                # Pick up the rules the PM stashed in state so each PM insight's
+                # frontmatter records what it was told to do; ``None`` when no
+                # rules fired this run (legacy/no-track-record behaviour).
+                rules_by_ticker = (result.get("data") or {}).get("pm_rules_applied")
+                ingest_decisions(
+                    decisions,
+                    end_date=end_date,
+                    run_id=run_id,
+                    root=root,
+                    rules_by_ticker=rules_by_ticker,
+                )
             # Wire PM decisions through to Alpaca PAPER orders when explicitly enabled
             # by the Trading Account node (fail-open: a problem with one order never
             # breaks the run).
