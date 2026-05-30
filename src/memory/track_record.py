@@ -167,6 +167,15 @@ def compute_outcomes(
             continue
         if not ins:
             continue
+        # Drop insights dated AFTER ``today``. Defends walk-forward
+        # backtests against lookahead bias: the wiki may contain insights
+        # from later backtest days (because a prior backtest already wrote
+        # them, or because two backtests share a flow). At backtest-day N
+        # the PM must only see insights dated ≤ N. In live runs ``today``
+        # is real today and every dated insight passes — this is a no-op.
+        ins = [i for i in ins if (_parse_date(i.date) or _date(1900, 1, 1)) <= today]
+        if not ins:
+            continue
         # Newest first.
         ins.sort(key=lambda i: i.date, reverse=True)
         # Use the full history when picking the price-fetch window — we want
