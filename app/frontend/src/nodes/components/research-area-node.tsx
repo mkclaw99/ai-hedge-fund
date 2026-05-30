@@ -25,6 +25,7 @@ import { NodeShell } from './node-shell';
 
 const SCHEDULES = [
   { value: 'off', label: 'Off (manual only)' },
+  { value: 'hourly', label: 'Hourly' },
   { value: 'daily', label: 'Daily' },
   { value: 'weekly', label: 'Weekly' },
 ];

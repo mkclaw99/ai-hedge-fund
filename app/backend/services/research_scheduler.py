@@ -5,10 +5,10 @@ A research-area run persists its config in ``flow.data["researchRun"]`` (via
 due and **replays** that config headless — re-discovering the universe via the
 analyst MCP and re-running the analysts + PM — then stamps ``last_run``.
 
-Guardrails (re-analysis is the costly choice): only ``daily``/``weekly`` cadences,
-default ``off``, and a flow is only eligible once it's been run manually once
-(which is what arms it). Runs single-process; do not launch under ``--reload`` or
-multiple workers or cadences double-fire.
+Guardrails (re-analysis is the costly choice): only ``hourly``/``daily``/``weekly``
+cadences, default ``off``, and a flow is only eligible once it's been run manually
+once (which is what arms it). Runs single-process; do not launch under ``--reload``
+or multiple workers or cadences double-fire.
 """
 
 import asyncio
@@ -25,7 +25,7 @@ from app.backend.services.run_executor import execute_research_run
 logger = logging.getLogger(__name__)
 
 _POLL_SECONDS = 300  # how often the loop wakes
-_INTERVALS = {"daily": 86_400, "weekly": 604_800}
+_INTERVALS = {"hourly": 3_600, "daily": 86_400, "weekly": 604_800}
 
 
 def _now() -> datetime.datetime:

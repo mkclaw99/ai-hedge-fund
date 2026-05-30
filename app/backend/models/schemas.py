@@ -174,7 +174,7 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     research_mandate: Optional[str] = None  # Fundamental Research node: the topic researcher's lens
     research_company_mandate: Optional[str] = None  # Fundamental Companies node: the extraction lens
     research_max_companies: Optional[int] = 10
-    research_schedule: Optional[str] = "off"  # off | daily | weekly — auto-refresh cadence
+    research_schedule: Optional[str] = "off"  # off | hourly | daily | weekly — auto-refresh cadence
     # When True (and a Trading Account node is in the flow with Auto-trade on), the
     # PM's per-ticker decisions are submitted as market orders on the user's Alpaca
     # PAPER account. Default off — even paper orders are a real action.
