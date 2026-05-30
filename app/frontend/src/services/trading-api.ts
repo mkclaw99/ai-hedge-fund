@@ -70,3 +70,37 @@ export async function getPaperPositions(): Promise<PaperPosition[]> {
     return [];
   }
 }
+
+// ── Equity-over-time ─────────────────────────────────────────────────
+// Powers the Performance chart in the Trading Account → Details dialog.
+
+export type PortfolioHistoryPeriod = '1D' | '5D' | '1M' | '3M' | '1A' | 'all';
+
+export interface PortfolioHistorySample {
+  ts: number;                // unix seconds
+  equity: number;
+  profit_loss: number;
+  profit_loss_pct: number;   // 0.0123 = +1.23%
+}
+
+export interface PortfolioHistory {
+  connected: boolean;
+  paper?: boolean;
+  reason?: string;
+  period: string;
+  timeframe: string;
+  base_value?: number;
+  samples: PortfolioHistorySample[];
+}
+
+export async function getPortfolioHistory(period: PortfolioHistoryPeriod = '1M'): Promise<PortfolioHistory> {
+  try {
+    const r = await fetch(
+      `${API_BASE_URL}/trading/paper/portfolio-history?period=${encodeURIComponent(period)}`,
+    );
+    if (!r.ok) return { connected: false, paper: true, reason: `HTTP ${r.status}`, period, timeframe: '1D', samples: [] };
+    return (await r.json()) as PortfolioHistory;
+  } catch (e: any) {
+    return { connected: false, paper: true, reason: e?.message || 'fetch failed', period, timeframe: '1D', samples: [] };
+  }
+}

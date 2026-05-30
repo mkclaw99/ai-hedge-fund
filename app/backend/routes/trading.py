@@ -29,3 +29,18 @@ async def paper_orders(db: Session = Depends(get_db), status: str = "all", limit
     """Recent paper-account orders for the Details view."""
     api_keys = ApiKeyService(db).get_api_keys_dict()
     return {"orders": alpaca_paper.get_orders(api_keys, status=status, limit=limit)}
+
+
+@router.get("/paper/portfolio-history")
+async def paper_portfolio_history(
+    db: Session = Depends(get_db),
+    period: str = "1M",
+    timeframe: str | None = None,
+):
+    """Equity time-series powering the Performance chart in the Details dialog.
+
+    ``period`` ∈ {1D, 5D, 7D, 1M, 3M, 6M, 1A, 5A, all}. ``timeframe`` is
+    auto-picked when omitted (1H for sub-week, 1D otherwise) so the sample
+    count stays under a few hundred and the inline SVG chart is cheap."""
+    api_keys = ApiKeyService(db).get_api_keys_dict()
+    return alpaca_paper.get_portfolio_history(api_keys, period=period, timeframe=timeframe)
