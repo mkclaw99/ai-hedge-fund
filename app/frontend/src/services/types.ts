@@ -57,7 +57,7 @@ export interface HedgeFundRequest extends BaseHedgeFundRequest {
   research_mandate?: string; // Fundamental Research: topic researcher's lens
   research_company_mandate?: string; // Fundamental Companies: extraction lens
   research_max_companies?: number;
-  research_schedule?: string; // off | daily | weekly
+  research_schedule?: string; // off | hourly | daily | weekly
   place_paper_orders?: boolean; // submit PM decisions to Alpaca PAPER (opt-in via Trading Account node)
   starting_budget?: number;     // Trading Account node's Starting Budget (drives budget-aware sizing)
   strategy?: StrategyConfig;    // Strategy node config — style, sizing, caps, instruments, mandate
