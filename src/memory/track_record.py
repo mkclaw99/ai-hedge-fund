@@ -477,6 +477,16 @@ def derive_pm_rules(
     for (analyst, ticker), cell in at.items():
         if cell["n"] < min_n:
             continue
+        # Exclude the Portfolio Manager from rule generation entirely. The PM is
+        # a meta-signal, not an independent signal source — its decisions appear
+        # in the prior-research block, not in the signals JSON. Surfacing it as
+        # a "trust X on Y" or "lone winner" rule produces a circular feedback
+        # loop where the PM is told to side with itself (observed in the
+        # walk-forward test of 2026-04-15: a 3W/0L PM cell flagged "Portfolio
+        # Manager on COHR" as the lone winner, telling the PM to follow itself).
+        # Calibration likewise: there's no analyst-signal entry to multiply.
+        if analyst == "Portfolio Manager":
+            continue
         hr = cell["hit_rate_weighted"]
         if hr <= loss_pct:
             rules.append({

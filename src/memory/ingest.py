@@ -123,6 +123,7 @@ def ingest_decisions(
     end_date: str | None = None,
     run_id: str | None = None,
     root: str | None = None,
+    rules_by_ticker: dict[str, list[str]] | None = None,
 ) -> int:
     """Ingest the Portfolio Manager's final decisions as its own wiki insights.
 
@@ -135,6 +136,10 @@ def ingest_decisions(
         end_date:  analysis as-of date; defaults to today.
         run_id:    groups this run's insights; defaults to a random id.
         root:      wiki dir override (else $WIKI_MEMORY_DIR or ./wiki).
+        rules_by_ticker: optional ``{ticker: [rule_text, ...]}`` of the
+            Mandatory Adjustment rules that were active when this PM decision
+            was made. Surfaced in the wiki frontmatter + a Rules Applied
+            markdown section so per-day audit is greppable.
 
     Returns the number of decisions written (0 if disabled or nothing to write).
     Never raises.
@@ -144,6 +149,7 @@ def ingest_decisions(
     try:
         day = (end_date or _date.today().isoformat())[:10]
         rid = run_id or uuid.uuid4().hex[:8]
+        rules_by_ticker = rules_by_ticker or {}
         insights: list[Insight] = []
         for ticker, payload in decisions.items():
             if not isinstance(payload, dict):
@@ -156,14 +162,16 @@ def ingest_decisions(
             reasoning = f"Decided {action}" + (f" {qty}" if qty else "")
             if base_reasoning:
                 reasoning += f" — {base_reasoning}"
+            ticker_upper = str(ticker).upper()
             insights.append(Insight(
-                ticker=str(ticker).upper(),
+                ticker=ticker_upper,
                 analyst=PM_ANALYST,
                 signal=_ACTION_STANCE.get(action, "neutral"),
                 confidence=float(payload.get("confidence") or 0.0),
                 reasoning=reasoning,
                 date=day,
                 run_id=rid,
+                rules_applied=list(rules_by_ticker.get(ticker_upper, [])),
             ))
         if not insights:
             return 0

@@ -309,6 +309,21 @@ def generate_trading_decision(
     pm_rules = derive_pm_rules(outcomes) if outcomes else []
     rules_block = render_pm_rules_block(pm_rules)
 
+    # Stash the rules per ticker on state so the post-graph wiki-ingest path
+    # can surface them on each PM insight's frontmatter. Tagged short text
+    # ("[lone_winner] Technical on COHR (n=4, 100%)") so per-day audit is
+    # greppable — no LLM emission, deterministic from the same outcomes the
+    # rules block was rendered from.
+    rules_for_state: dict[str, list[str]] = {}
+    for r in pm_rules:
+        tag = (
+            f"[{r['kind']}] {r['analyst']} on {r['ticker']} "
+            f"(n={r['n']}, {r['hit_rate']}%)"
+        )
+        rules_for_state.setdefault(r["ticker"].upper(), []).append(tag)
+    if rules_for_state:
+        state.setdefault("data", {})["pm_rules_applied"] = rules_for_state
+
     # Track record — the broader W/L/OPEN rollup. Same outcomes list as the
     # rules block, so the rules and the stats agree by construction.
     track_record_block = render_track_record_block(outcomes) if outcomes else ""

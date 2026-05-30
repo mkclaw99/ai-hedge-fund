@@ -196,17 +196,34 @@ class WikiMemory:
             log.write_text("# Wiki Log\n\n", encoding="utf-8")
 
     def _write_source(self, ins: Insight) -> None:
-        fm = _frontmatter({
+        meta = {
             "ticker": ins.ticker,
             "analyst": ins.analyst,
             "signal": ins.signal,
             "confidence": int(ins.confidence),
             "date": ins.date,
             "run_id": ins.run_id,
-        })
+        }
+        # Inline the rules in a `[a, b, c]` style list — keeps the lightweight
+        # one-key-per-line YAML-ish frontmatter parser happy (it does not
+        # handle multi-line block sequences). Skipped when empty so legacy
+        # insights stay byte-identical.
+        if ins.rules_applied:
+            meta["rules_applied"] = (
+                "[" + ", ".join(_quote(r) for r in ins.rules_applied) + "]"
+            )
+        fm = _frontmatter(meta)
+        rules_section = ""
+        if ins.rules_applied:
+            rules_section = (
+                "## Rules Applied\n\n"
+                + "\n".join(f"- {r}" for r in ins.rules_applied)
+                + "\n\n"
+            )
         body = (
             f"{fm}\n# {ins.ticker} — {ins.analyst} ({ins.date})\n\n"
             f"**Signal:** {ins.signal}  |  **Confidence:** {int(ins.confidence)}%\n\n"
+            f"{rules_section}"
             f"## Reasoning\n\n{ins.reasoning.strip() or '(none provided)'}\n\n"
             f"[[{ins.ticker}]] · [[{_slugify(ins.analyst)}|{ins.analyst}]]\n"
         )
@@ -328,6 +345,11 @@ def _frontmatter(meta: dict) -> str:
         lines.append(f"{k}: {v}")
     lines.append("---")
     return "\n".join(lines)
+
+
+def _quote(s: str) -> str:
+    """Single-quote a string for inline-list frontmatter, escaping any quotes."""
+    return "'" + str(s).replace("'", "''") + "'"
 
 
 def _read_frontmatter(text: str) -> dict:
