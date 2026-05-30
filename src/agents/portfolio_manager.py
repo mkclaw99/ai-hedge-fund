@@ -499,11 +499,19 @@ def _compute_outcomes_for_pm(strategy, tickers, state):
 
     Returns ``[]`` when there is no flow-scoped wiki, no tickers, or any
     error along the way. Fail-open: the PM degrades to "no track record"
-    rather than crashing, exactly as before — but now there is one call to
-    ``compute_outcomes`` per PM invocation instead of two (the previous
-    code recomputed inside ``_render_track_record_block``).
+    rather than crashing.
+
+    Walk-forward correctness: passes ``state["data"]["end_date"]`` as
+    ``today`` to ``compute_outcomes`` so during a backtest the PM at
+    day N never sees outcomes derived from prices or insights dated
+    after N. Without this the model would have lookahead access to the
+    rest of the backtest range and any apparent "learning" would be the
+    bias, not the loop. In live runs ``end_date`` is today and behaviour
+    is unchanged.
     """
     try:
+        from datetime import date as _date_cls
+
         from src.memory import flow_root
         from src.memory.track_record import (
             compute_outcomes,
@@ -518,9 +526,21 @@ def _compute_outcomes_for_pm(strategy, tickers, state):
         request = (state.get("metadata", {}) or {}).get("request")
         if request and hasattr(request, "api_keys"):
             api_keys = request.api_keys
+
+        # Read backtest-current-date from state.data.end_date. Live runs set
+        # this to today, backtests set it per simulated day.
+        today_d = None
+        as_of = (state.get("data", {}) or {}).get("end_date")
+        if as_of:
+            try:
+                today_d = _date_cls.fromisoformat(str(as_of)[:10])
+            except Exception:
+                today_d = None
+
         return compute_outcomes(
             tickers, root,
             api_keys=api_keys,
+            today=today_d,
             holding_days=holding_days_from_strategy(strategy),
         )
     except Exception:
