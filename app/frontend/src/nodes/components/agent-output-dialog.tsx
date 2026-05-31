@@ -190,10 +190,14 @@ export function AgentOutputDialog({
     memSignal?: string;
     memConfidence?: number;
   };
+  // Strip the ForecasterNode's inline-chart fence — it travels through the
+  // analysis Markdown so we can chart it on the node, but the human-readable
+  // report shouldn't end with a raw JSON blob.
+  const stripForecastFence = (md: string) => md.replace(/\n?```forecast-data\s*\n[\s\S]*?\n```\s*$/m, '').trimEnd();
   const reports: TickerReport[] = tickersWithDecisions
     .map((t): TickerReport | null => {
       const runtime = allAnalysis[t];
-      if (runtime) return { ticker: t, text: runtime, fromMemory: false };
+      if (runtime) return { ticker: t, text: stripForecastFence(runtime), fromMemory: false };
       const mem = memFallback[t];
       if (mem?.reasoning) {
         return {

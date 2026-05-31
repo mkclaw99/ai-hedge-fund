@@ -43,6 +43,17 @@ _NEUTRAL_PCT = 1.0              # |q50_pct| below this → neutral
 _pipeline = None
 _pipeline_lock = Lock()
 
+# History context shown alongside the forecast in the node's inline chart.
+# Kept short on purpose — the chart panel is ~180 px wide and 30 trading
+# days is plenty to read direction off the most recent close. We have the
+# full ~256-step input regardless; this is just what we send to the UI.
+_CHART_HISTORY = 30
+# Fence marker the frontend's ForecasterNode parses out of the per-ticker
+# analysis Markdown. Bracketed so a Markdown viewer still renders the
+# block as a labelled code fence if a human opens the raw analysis.
+_CHART_FENCE_OPEN = "```forecast-data"
+_CHART_FENCE_CLOSE = "```"
+
 
 def _load_pipeline():
     """Lazy, process-wide singleton load of Chronos-2.
@@ -151,23 +162,38 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
         last_close = float(series_by_ticker[ticker][-1])
         # qt shape: (1, prediction_length, num_quantiles). The leading dim
         # is the (per-series) batch axis from Chronos's internal padding.
-        # Quantile order matches _QUANTILES (= [0.1, 0.5, 0.9]); use the
-        # final forecast step.
+        # Quantile order matches _QUANTILES (= [0.1, 0.5, 0.9]).
         try:
             arr = qt.detach().cpu().numpy() if hasattr(qt, "detach") else np.asarray(qt)
             arr = np.squeeze(arr, axis=0) if arr.ndim == 3 else arr
-            q10 = float(arr[-1, 0])
-            q50 = float(arr[-1, 1])
-            q90 = float(arr[-1, 2])
+            q10_traj = arr[:, 0].astype(float).tolist()
+            q50_traj = arr[:, 1].astype(float).tolist()
+            q90_traj = arr[:, 2].astype(float).tolist()
         except Exception as e:
             logger.warning("Chronos-2 unparseable output for %s: %s", ticker, e)
             continue
-        signals[ticker] = _build_signal(last_close, q10, q50, q90)
-        progress.update_status(agent_id, ticker, "Done", analysis=write_analyst_report(
+        # Signal mapping uses the final step's quantiles only — that's the
+        # horizon the user committed to forecasting against.
+        signals[ticker] = _build_signal(last_close, q10_traj[-1], q50_traj[-1], q90_traj[-1])
+        # Per-ticker chart payload, embedded into the analysis Markdown so
+        # the existing SSE 'analysis' channel carries it through without a
+        # schema change. ForecasterNode parses the fence; other components
+        # see it as a labelled code block and ignore it.
+        history = [float(x) for x in series_by_ticker[ticker][-_CHART_HISTORY:].tolist()]
+        chart = json.dumps({
+            "history": [round(x, 4) for x in history],
+            "q10": [round(x, 4) for x in q10_traj],
+            "q50": [round(x, 4) for x in q50_traj],
+            "q90": [round(x, 4) for x in q90_traj],
+            "horizon_days": _PRED_LEN,
+        })
+        report = write_analyst_report(
             agent_id, "Time Series Forecaster", ticker,
             signals[ticker]["signal"], signals[ticker]["confidence"],
             signals[ticker], state,
-        ))
+        )
+        analysis = f"{report}\n\n{_CHART_FENCE_OPEN}\n{chart}\n{_CHART_FENCE_CLOSE}\n"
+        progress.update_status(agent_id, ticker, "Done", analysis=analysis)
 
     if state["metadata"].get("show_reasoning"):
         show_agent_reasoning(signals, "Time Series Forecaster")
