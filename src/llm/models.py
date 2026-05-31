@@ -52,6 +52,7 @@ class ModelProvider(str, Enum):
     GIGACHAT = "GigaChat"
     AZURE_OPENAI = "Azure OpenAI"
     XAI = "xAI"
+    LM_STUDIO = "LM Studio"
 
 
 class LLMModel(BaseModel):
@@ -204,6 +205,12 @@ def get_model(model_name: str, model_provider: ModelProvider, api_keys: dict = N
             model=model_name,
             base_url=base_url,
         )
+    elif model_provider == ModelProvider.LM_STUDIO:
+        # LM Studio exposes an OpenAI-compatible API on the loopback. No
+        # real key needed — LM Studio accepts any non-empty string. The
+        # base URL is configurable so a remote instance also works.
+        base_url = os.getenv("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
+        return ChatOpenAI(model=model_name, api_key="lm-studio", base_url=base_url)
     elif model_provider == ModelProvider.OPENROUTER:
         api_key = (api_keys or {}).get("OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
         if not api_key:
