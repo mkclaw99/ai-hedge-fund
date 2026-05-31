@@ -1,6 +1,7 @@
 import { Edge, type NodeTypes } from '@xyflow/react';
 
 import { AgentNode } from './components/agent-node';
+import { ForecasterNode } from './components/forecaster-node';
 import { InvestmentReportNode } from './components/investment-report-node';
 import { JsonOutputNode } from './components/json-output-node';
 import { MemoryNode } from './components/memory-node';
@@ -57,6 +58,7 @@ export const initialEdges: Edge[] = [
 
 export const nodeTypes = {
   'agent-node': AgentNode,
+  'forecaster-node': ForecasterNode,
   'investment-report-node': InvestmentReportNode,
   'json-output-node': JsonOutputNode,
   'memory-node': MemoryNode,

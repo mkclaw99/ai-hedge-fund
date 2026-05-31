@@ -161,12 +161,15 @@ const getNodeTypeDefinitions = async (): Promise<Record<string, NodeTypeDefiniti
 
   const agents = await getAgents();
   
-  // Create agent node definitions
+  // Create agent node definitions. The forecaster gets a dedicated node
+  // type so it can render its inline fan chart; every other analyst uses
+  // the generic agent-node.
   const agentNodeDefinitions = agents.reduce((acc: Record<string, NodeTypeDefinition>, agent: Agent) => {
+    const nodeType = agent.key === "forecaster" ? "forecaster-node" : "agent-node";
     acc[agent.display_name] = {
       createNode: (position: { x: number, y: number }): AppNode => ({
         id: `${agent.key}_${generateUniqueIdSuffix()}`,
-        type: "agent-node",
+        type: nodeType,
         position,
         data: {
           name: agent.display_name,
