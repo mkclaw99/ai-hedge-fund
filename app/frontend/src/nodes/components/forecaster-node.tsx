@@ -607,22 +607,27 @@ function Cell({ title, value, sub, className }: { title: string; value: string; 
 // --- Detail two-panel chart -----------------------------------------------
 
 function DetailChart({ forecast }: { forecast: ForecastPayload }) {
-  // Geometry. Two stacked panels share x; price on top (taller), confidence
-  // strip below. ViewBox sized for a wide-screen dialog (~2.3:1 aspect)
-  // so it doesn't get letterboxed against a 96vw-wide container — the
-  // chart fills the surface rather than being a small sprite in a big
-  // dialog. Generous left/bottom padding for axis labels.
-  const W = 1600;
-  const PRICE_H = 460;
-  const CONF_H = 180;
-  // Padding sized for fontSize=20 axis labels (≈ 19 px wide for 6 chars,
-  // ≈ 24 px tall). Bumping fonts without growing padding clips labels.
+  // Responsive geometry: the viewBox matches the SVG's actual rendered
+  // pixel dimensions, so 1 viewBox unit == 1 screen pixel and there's no
+  // preserveAspectRatio letterboxing on wide screens. Measuring the SVG
+  // itself (not its parent) avoids subtracting the tooltip-strip / border
+  // by hand. Initial defaults are used until the first measurement lands.
+  const [dims, setDims] = useState({ w: 1600, h: 700 });
+
+  // Padding (fixed px) — sized for fontSize=20 axis labels (~19 px wide
+  // for 6 chars, ~24 px tall). The conf strip stays at 180 px so it's
+  // recognisable as a subplot; the price panel absorbs all leftover
+  // height. Width pads stay constant because the y-axis label width
+  // doesn't scale with chart width.
   const padL = 100;
   const padR = 24;
   const padTopPrice = 22;
   const padBetween = 36;
   const padBottom = 50;
-  const H = padTopPrice + PRICE_H + padBetween + CONF_H + padBottom;
+  const CONF_H = 180;
+  const W = dims.w;
+  const H = dims.h;
+  const PRICE_H = Math.max(140, H - padTopPrice - padBetween - CONF_H - padBottom);
   const FS_TICK = 20;
   const FS_LABEL = 20;
 
@@ -685,6 +690,21 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
+  // ResizeObserver on the SVG element itself. Re-fires on dialog resize,
+  // window resize, even browser-zoom. setDims triggers a re-render which
+  // recomputes every path coordinate against the new W/H.
+  useEffect(() => {
+    if (!svgRef.current) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        setDims({ w: Math.max(400, Math.floor(width)), h: Math.max(220, Math.floor(height)) });
+      }
+    });
+    ro.observe(svgRef.current);
+    return () => ro.disconnect();
+  }, []);
+
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const svg = svgRef.current;
     if (!svg) return;
@@ -735,7 +755,10 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
   return (
     // flex-1 + min-h-0 lets this take all the remaining vertical space
     // inside the flex-column dialog. Without min-h-0 the flex item refuses
-    // to shrink below content size and overflows the viewport.
+    // to shrink below content size and overflows the viewport. The
+    // containerRef + ResizeObserver above measures this div so the SVG
+    // viewBox can match it pixel-for-pixel — no preserveAspectRatio
+    // letterboxing on wide-screen displays.
     <div className="flex-1 min-h-0 rounded border border-border bg-node/40 p-2 flex flex-col">
       <svg
         ref={svgRef}
