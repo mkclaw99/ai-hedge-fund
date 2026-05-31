@@ -125,6 +125,33 @@ class SQLiteCache:
             logger.warning("SQLiteCache.clear failed: %s", exc)
             return 0
 
+    def keys_for(self, data_type: str) -> list[str]:
+        """All cache_keys for a data_type. Used to migrate legacy range-keyed
+        entries into per-ticker buckets — see Cache._migrate_range_keys."""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT cache_key FROM fd_cache WHERE data_type=?",
+                    (data_type,),
+                ).fetchall()
+            return [r[0] for r in rows]
+        except sqlite3.Error as exc:
+            logger.warning("SQLiteCache.keys_for failed for %s: %s", data_type, exc)
+            return []
+
+    def delete(self, data_type: str, key: str) -> None:
+        """Remove a single entry. Best-effort; never raises. Used by the
+        migration to drop legacy range-keyed entries once they've been merged
+        into the per-ticker bucket."""
+        try:
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    "DELETE FROM fd_cache WHERE data_type=? AND cache_key=?",
+                    (data_type, key),
+                )
+        except sqlite3.Error as exc:
+            logger.warning("SQLiteCache.delete failed for %s/%s: %s", data_type, key, exc)
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------

@@ -13,9 +13,20 @@ A two-tier cache:
 from __future__ import annotations
 
 import os
+import re
 import time
 
 from src.data.freshness import is_fresh
+
+# Old range-keyed cache entries (pre-ticker-bucket era) look like:
+#   prices            → "AAPL_2024-01-01_2026-05-30"
+#   financial_metrics → "AAPL_ttm_2024-01-01_10"
+#   insider_trades    → "AAPL_2024-01-01_2026-05-30_1000"
+#   company_news      → "AAPL_2024-01-01_2026-05-30_1000"
+# All four embed at least one YYYY-MM-DD. The new ticker-bucket keys are
+# date-less: "AAPL" or "AAPL_ttm". We detect "legacy" by the presence of a
+# date.
+_LEGACY_DATE_RE = re.compile(r"_\d{4}-\d{2}-\d{2}")
 
 
 class Cache:
@@ -82,6 +93,74 @@ class Cache:
         self._fetched_at[(data_type, key)] = time.time()
         if self._backend is not None:
             self._backend.set(data_type, key, merged)
+
+    # ------------------------------------------------------------------
+    # Migration (one-shot, lazy): roll legacy range-keyed entries up into
+    # the new per-ticker bucket. Called from api.py on first access for a
+    # ticker. Each ticker pays the migration cost once.
+    # ------------------------------------------------------------------
+
+    def _migrate_legacy_keys(
+        self,
+        data_type: str,
+        store: dict,
+        bucket_key: str,
+        ticker: str,
+        key_field: str,
+        period: str | None = None,
+    ) -> None:
+        """Merge any legacy ``{ticker}[_…]_DATE…`` entries into *bucket_key*.
+
+        Args:
+            data_type: cache table name ('prices', 'financial_metrics', ...).
+            store: the in-memory dict for this data_type.
+            bucket_key: the new ticker-bucket key (e.g. 'AAPL' or 'AAPL_ttm').
+            ticker: the ticker symbol used as the prefix.
+            key_field: dedup key for the rows (e.g. 'time' for prices).
+            period: optional second component to constrain matches when the
+                bucket key is ``ticker_period`` (so we don't merge a
+                ``AAPL_annual_*`` legacy entry into the ``AAPL_ttm`` bucket).
+
+        Best-effort: any error during migration is swallowed so a read
+        path is never broken by stale legacy data.
+        """
+        if self._backend is None:
+            return
+        # Track which buckets have already been migrated this process.
+        if not hasattr(self, "_migrated"):
+            self._migrated = set()
+        if (data_type, bucket_key) in self._migrated:
+            return
+        self._migrated.add((data_type, bucket_key))
+        try:
+            all_keys = self._backend.keys_for(data_type)
+            # Prefix match + must contain a date (otherwise it's already a
+            # new-format bucket key, or a free-form key we shouldn't touch).
+            prefix = f"{ticker}_{period}_" if period else f"{ticker}_"
+            legacy = [
+                k for k in all_keys
+                if k != bucket_key
+                and k.startswith(prefix)
+                and _LEGACY_DATE_RE.search(k)
+            ]
+            if not legacy:
+                return
+            merged: list[dict] = list(store.get(bucket_key) or [])
+            for k in legacy:
+                rows = self._backend.get(data_type, k)
+                if rows:
+                    merged = self._merge_data(merged, rows, key_field)
+            if merged:
+                store[bucket_key] = merged
+                self._fetched_at[(data_type, bucket_key)] = time.time()
+                self._backend.set(data_type, bucket_key, merged)
+            for k in legacy:
+                self._backend.delete(data_type, k)
+        except Exception:
+            # Migration is best-effort. Leave the legacy entries alone if
+            # something goes wrong — they'll keep working under the old
+            # range-key freshness path until we get another chance.
+            pass
 
     # ------------------------------------------------------------------
     # Typed accessors (public API — unchanged signatures)
