@@ -1,9 +1,12 @@
 import { Flow } from '@/components/Flow';
 import { useFlowContext } from '@/contexts/flow-context';
+import { useNodeContext } from '@/contexts/node-context';
 import { useTabsContext } from '@/contexts/tabs-context';
+import { extractBaseAgentKey } from '@/data/node-mappings';
 import { setNodeInternalState, setCurrentFlowId as setNodeStateFlowId } from '@/hooks/use-node-state';
 import { cn } from '@/lib/utils';
 import { flowService } from '@/services/flow-service';
+import { getFlowMemory } from '@/services/memory-api';
 import { Flow as FlowType } from '@/types/flow';
 import { useEffect } from 'react';
 
@@ -17,18 +20,16 @@ interface FlowTabContentProps {
 export function FlowTabContent({ flow, className }: FlowTabContentProps) {
   const { loadFlow } = useFlowContext();
   const { activeTabId } = useTabsContext();
+  const { getAgentNodeDataForFlow, updateAgentNode, setOutputNodeData } = useNodeContext();
 
   // Enhanced load function that restores both use-node-state and node context data
   const loadFlowWithCompleteState = async (flowToLoad: FlowType) => {
     try {
       const flowId = flowToLoad.id.toString();
-      
+
       // First, set the flow ID for node state isolation
       setNodeStateFlowId(flowId);
-      
-      // DO NOT clear configuration state when switching tabs - useNodeState handles flow isolation automatically
-      // DO NOT reset runtime data when switching tabs - preserve all runtime state
-      // Runtime data should only be reset when explicitly starting a new run via the Play button
+
       console.log(`[FlowTabContent] Loading flow ${flowId}, preserving all state (configuration + runtime)`);
 
       // Load the flow using the basic context function (handles React Flow state)
@@ -42,13 +43,139 @@ export function FlowTabContent({ flow, className }: FlowTabContentProps) {
           }
         });
       }
-      
-      // NOTE: We intentionally do NOT restore nodeContextData here
-      // Runtime execution data (messages, analysis, agent status) should start fresh
-      // Only configuration data (tickers, model selections) is restored above
+
+      // Rehydrate runtime data from the wiki (deliberately scoped: only
+      // when NodeContext is empty for this flow, so an active run or
+      // already-warm tab session isn't trampled). This makes agent
+      // statuses and per-ticker reasoning survive a page reload — the
+      // run results have always been persisted via ingest_run, the
+      // frontend just didn't read them back.
+      await rehydrateFromMemory(flowToLoad, flowId);
     } catch (error) {
       console.error('Failed to load flow with complete state:', error);
       throw error;
+    }
+  };
+
+  const rehydrateFromMemory = async (flowToLoad: FlowType, flowId: string) => {
+    // Skip when any node already carries messages — that means either an
+    // active run is streaming or a prior tab activation already
+    // rehydrated. Either way the in-memory state is fresher than the
+    // wiki and overwriting would erase live progress.
+    const existing = getAgentNodeDataForFlow(flowId);
+    const hasRuntimeData = Object.values(existing).some((d) => (d.messages?.length ?? 0) > 0);
+    if (hasRuntimeData) {
+      console.log(`[FlowTabContent] Flow ${flowId} already has runtime data; skipping rehydrate.`);
+      return;
+    }
+
+    try {
+      const flowIdNum = Number(flowId);
+      if (!Number.isFinite(flowIdNum)) return;
+      const memory = await getFlowMemory(flowIdNum);
+      const tickersMem = memory.tickers ?? [];
+      if (tickersMem.length === 0) return;
+
+      // Wiki rows are keyed by `normalize_analyst_name(agent_id)` —
+      // 'forecaster_agent' → 'Forecaster', 'warren_buffett_agent' →
+      // 'Warren Buffett', etc. To match a flow node back to its row,
+      // strip the unique id suffix and derive the same name.
+      const wikiNameFromKey = (key: string) =>
+        key
+          .replace(/_agent$/, '')
+          .replace(/_/g, ' ')
+          .split(' ')
+          .filter(Boolean)
+          .map((w) => w[0].toUpperCase() + w.slice(1))
+          .join(' ');
+
+      const aliasesFor = (key: string): string[] => {
+        const base = wikiNameFromKey(key);
+        // Forecaster gets a hand-coded alias because its display name
+        // ("Time Series Forecaster") doesn't derive from the agent_id —
+        // any future analyst with the same disconnect should be added
+        // here.
+        if (key === 'forecaster') return [base, 'Time Series Forecaster'];
+        return [base];
+      };
+
+      // Synthesize a stable timestamp from the wiki date so updateAgentNode's
+      // de-duplication doesn't append the same message twice on a re-fetch.
+      const tsFor = (date: string, ticker: string) => `${date}T00:00:00.000Z#${ticker}`;
+
+      // Build analyst_signals shape for OutputNode + bottom panel consumers.
+      const analystSignals: Record<string, Record<string, unknown>> = {};
+      const decisions: Record<string, unknown> = {};
+
+      for (const node of flowToLoad.nodes ?? []) {
+        const baseKey = extractBaseAgentKey(node.id);
+
+        // Portfolio Manager path — pull pm_decisions per ticker.
+        if (baseKey === 'portfolio_manager') {
+          const messages: any[] = [];
+          for (const t of tickersMem) {
+            const dec = (t.pm_decisions ?? [])[0];
+            if (!dec?.reasoning) continue;
+            messages.push({
+              timestamp: tsFor(dec.date, t.ticker),
+              message: 'Done',
+              ticker: t.ticker,
+              analysis: dec.reasoning,
+            });
+            decisions[t.ticker] = {
+              action:
+                dec.signal === 'bullish' ? 'buy' : dec.signal === 'bearish' ? 'sell' : 'hold',
+              confidence: dec.confidence,
+              reasoning: dec.reasoning,
+            };
+          }
+          if (messages.length > 0) {
+            for (const m of messages) updateAgentNode(flowId, node.id, m);
+            updateAgentNode(flowId, node.id, 'COMPLETE');
+          }
+          continue;
+        }
+
+        // Analyst path — match the node's base key to one of the
+        // wiki's analyst-name aliases, then dispatch a synthetic
+        // 'Done' message per ticker that carries the full reasoning
+        // Markdown. The ForecasterNode and AgentOutputDialog both
+        // read this exact channel, so no further plumbing needed.
+        const aliases = aliasesFor(baseKey).map((s) => s.toLowerCase());
+        let dispatched = 0;
+        for (const t of tickersMem) {
+          const row = (t.analysts ?? []).find((a) => aliases.includes((a.analyst ?? '').toLowerCase()));
+          if (!row?.reasoning) continue;
+          updateAgentNode(flowId, node.id, {
+            timestamp: tsFor(row.date, t.ticker),
+            message: 'Done',
+            ticker: t.ticker,
+            analysis: row.reasoning,
+          });
+          dispatched += 1;
+          // Mirror into analyst_signals for OutputNode etc.
+          const agentKey = `${baseKey}_agent`;
+          analystSignals[agentKey] = analystSignals[agentKey] || {};
+          (analystSignals[agentKey] as Record<string, unknown>)[t.ticker] = {
+            signal: row.signal,
+            confidence: row.confidence,
+            reasoning: row.reasoning,
+          };
+        }
+        if (dispatched > 0) updateAgentNode(flowId, node.id, 'COMPLETE');
+      }
+
+      // Output panel rehydration — only seed if either side has content.
+      if (Object.keys(decisions).length > 0 || Object.keys(analystSignals).length > 0) {
+        setOutputNodeData(flowId, {
+          decisions,
+          analyst_signals: analystSignals,
+        });
+      }
+    } catch (e) {
+      // Fail-open: a missing wiki, network blip, or schema drift just
+      // leaves the freshly-loaded flow in its default empty state.
+      console.warn('[FlowTabContent] rehydrate from memory failed:', e);
     }
   };
 
