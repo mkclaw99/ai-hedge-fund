@@ -161,7 +161,47 @@ def get_models_list():
     ]
 
 
-def get_model(model_name: str, model_provider: ModelProvider, api_keys: dict = None) -> ChatOpenAI | ChatGroq | ChatOllama | GigaChat | None:
+# Thinking-budget enum → token count. Mirrors the levels Gemini's
+# thinkingConfig API actually treats as meaningful, with -1 ("dynamic")
+# letting the model decide and 0 disabling thinking entirely (where the
+# model supports that — gemini-2.5-pro / 3.x-pro always think).
+_THINKING_LEVELS: dict[str, int] = {
+    "off": 0,
+    "low": 1024,
+    "medium": 8192,
+    "high": 24576,
+    "dynamic": -1,
+}
+
+
+def resolve_thinking_budget(level: str | int | None) -> int | None:
+    """Normalize a thinking-level enum or raw token count into an int.
+
+    Returns None when *level* is falsy/unrecognised — caller should then
+    skip the parameter so the model uses its own default. Lets the
+    frontend send a friendly enum ("medium") while the backend keeps the
+    door open for direct token-count overrides via env or future surfaces.
+    """
+    if level is None:
+        return None
+    if isinstance(level, int):
+        return level
+    s = str(level).strip().lower()
+    if s in _THINKING_LEVELS:
+        return _THINKING_LEVELS[s]
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_model(
+    model_name: str,
+    model_provider: ModelProvider,
+    api_keys: dict = None,
+    *,
+    thinking_budget: str | int | None = None,
+) -> ChatOpenAI | ChatGroq | ChatOllama | GigaChat | None:
     if model_provider == ModelProvider.GROQ:
         api_key = (api_keys or {}).get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
         if not api_key:
@@ -195,7 +235,20 @@ def get_model(model_name: str, model_provider: ModelProvider, api_keys: dict = N
         if not api_key:
             print(f"API Key Error: Please make sure GOOGLE_API_KEY is set in your .env file or provided via API keys.")
             raise ValueError("Google API key not found.  Please make sure GOOGLE_API_KEY is set in your .env file or provided via API keys.")
-        return ChatGoogleGenerativeAI(model=model_name, api_key=api_key, rate_limiter=_GEMINI_RATE_LIMITER)
+        kwargs: dict = {
+            "model": model_name,
+            "api_key": api_key,
+            "rate_limiter": _GEMINI_RATE_LIMITER,
+        }
+        # Forward the resolved thinking budget when one was provided.
+        # Pro models always think (the API ignores 0 there); Flash
+        # respects 0 to disable, 1024–24576 for budgeted thinking, or
+        # -1 for "model decides". langchain-google-genai 2.x maps this
+        # straight onto thinkingConfig.thinkingBudget.
+        tb = resolve_thinking_budget(thinking_budget)
+        if tb is not None:
+            kwargs["thinking_budget"] = tb
+        return ChatGoogleGenerativeAI(**kwargs)
     elif model_provider == ModelProvider.OLLAMA:
         # For Ollama, we use a base URL instead of an API key
         # Check if OLLAMA_HOST is set (for Docker on macOS)

@@ -34,7 +34,7 @@ def write_analyst_report(agent_id, display_name, ticker, signal, confidence, ana
     fallback = f"```json\n{_dump(analysis_data)}\n```"
     try:
         from src.llm.models import get_model
-        from src.utils.llm import ANALYST_REPORT_INSTRUCTIONS, get_agent_model_config
+        from src.utils.llm import ANALYST_REPORT_INSTRUCTIONS, get_agent_model_config, get_agent_thinking_budget
         from src.utils.token_usage import UsageCallback
 
         model_name, model_provider = get_agent_model_config(state, agent_id)
@@ -43,7 +43,8 @@ def write_analyst_report(agent_id, display_name, ticker, signal, confidence, ana
         if request and hasattr(request, "api_keys"):
             api_keys = request.api_keys
 
-        model = get_model(model_name, model_provider, api_keys)
+        thinking_budget = get_agent_thinking_budget(state, agent_id)
+        model = get_model(model_name, model_provider, api_keys, thinking_budget=thinking_budget)
         if model is None:
             return fallback
 

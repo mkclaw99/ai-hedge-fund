@@ -213,6 +213,17 @@ export function StockAnalyzerNode({
     const forecasterPredictionLen = forecasterState?.forecasterPredictionLen != null ? Number(forecasterState.forecasterPredictionLen) : undefined;
     const forecasterBarFrequency = forecasterState?.forecasterBarFrequency || undefined;
 
+    // Per-agent Gemini thinking budgets — same pattern as portfolio-start.
+    type ThinkingBudget = 'off' | 'low' | 'medium' | 'high' | 'dynamic';
+    const agentThinkingBudgets: Record<string, ThinkingBudget> = {};
+    for (const node of agentNodes) {
+      const internal = getNodeInternalState(node.id) as any;
+      const v = internal?.thinkingBudget;
+      if (v && v !== 'dynamic' && ['off','low','medium','high'].includes(v)) {
+        agentThinkingBudgets[node.id] = v as ThinkingBudget;
+      }
+    }
+
     // Check if we're in backtest mode
     if (runMode === 'backtest') {
       // Use the flow connection hook to run the backtest with selected dates
@@ -238,6 +249,7 @@ export function StockAnalyzerNode({
         forecaster_context_len: forecasterContextLen,
         forecaster_prediction_len: forecasterPredictionLen,
         forecaster_bar_frequency: forecasterBarFrequency,
+        agent_thinking_budgets: Object.keys(agentThinkingBudgets).length > 0 ? agentThinkingBudgets : undefined,
       });
     } else {
       // Use the regular hedge fund API for single run
@@ -260,6 +272,7 @@ export function StockAnalyzerNode({
         forecaster_context_len: forecasterContextLen,
         forecaster_prediction_len: forecasterPredictionLen,
         forecaster_bar_frequency: forecasterBarFrequency,
+        agent_thinking_budgets: Object.keys(agentThinkingBudgets).length > 0 ? agentThinkingBudgets : undefined,
         start_date: startDate,
         end_date: endDate,
       });
