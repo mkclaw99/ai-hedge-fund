@@ -336,8 +336,8 @@ function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onT
         onClick={(e) => e.stopPropagation()}
       >
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-primary">
-            <LineChart className="h-4 w-4" />
+          <DialogTitle className="flex items-center gap-2 text-primary text-xl">
+            <LineChart className="h-5 w-5" />
             <span>Chronos-2 Forecast{activeTicker ? ` · ${activeTicker}` : ''}</span>
           </DialogTitle>
         </DialogHeader>
@@ -379,13 +379,13 @@ function DetailBody({
     <div className="flex-1 min-h-0 flex flex-col gap-3 text-foreground">
       {/* Ticker selector */}
       {tickers.length > 1 && (
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap gap-1.5">
           {tickers.map((tk) => (
             <button
               key={tk}
               onClick={() => onTickerChange(tk)}
               className={cn(
-                'px-2 py-0.5 rounded text-xs tabular-nums border transition-colors',
+                'px-3 py-1 rounded text-sm font-medium tabular-nums border transition-colors',
                 tk === activeTicker
                   ? 'bg-primary/20 border-primary/40 text-primary'
                   : 'border-border text-muted-foreground hover:bg-node/50',
@@ -409,21 +409,28 @@ function DetailBody({
 
       <DetailChart forecast={forecast} />
 
-      <p className="text-[11px] text-muted-foreground leading-snug">
-        Inner band = 50% prediction interval (q25-q75). Outer band = 80% prediction interval (q10-q90).
-        Confidence is the precision of the predictive distribution at each step
-        (narrow fan = confident); it decays as the horizon extends because the fan widens with time.
-      </p>
+      {/* Legend / glossary — split into bullet items so each idea reads
+          on its own line; bigger text so it's actually readable. */}
+      <ul className="text-sm text-muted-foreground leading-snug flex flex-wrap gap-x-6 gap-y-1">
+        <li><span className="text-foreground">Inner band</span> — 50% prediction interval (q25–q75)</li>
+        <li><span className="text-foreground">Outer band</span> — 80% prediction interval (q10–q90)</li>
+        <li><span className="text-foreground">Confidence</span> — precision per step (narrow fan = confident); decays as horizon extends</li>
+      </ul>
     </div>
   );
 }
 
 function Cell({ title, value, sub, className }: { title: string; value: string; sub?: string; className?: string }) {
   return (
-    <div className="rounded border border-border p-2 bg-node/40">
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{title}</div>
-      <div className={cn('text-sm font-medium', className)} style={className && className.startsWith('#') ? { color: className } : undefined}>{value}</div>
-      {sub && <div className="text-[10px] text-muted-foreground">{sub}</div>}
+    <div className="rounded border border-border p-3 bg-node/40">
+      <div className="text-xs uppercase tracking-wide text-muted-foreground">{title}</div>
+      <div
+        className={cn('text-lg font-semibold mt-0.5', className)}
+        style={className && className.startsWith('#') ? { color: className } : undefined}
+      >
+        {value}
+      </div>
+      {sub && <div className="text-xs text-muted-foreground mt-0.5">{sub}</div>}
     </div>
   );
 }
@@ -439,12 +446,16 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
   const W = 1600;
   const PRICE_H = 460;
   const CONF_H = 180;
-  const padL = 72;
-  const padR = 16;
-  const padTopPrice = 16;
-  const padBetween = 26;
-  const padBottom = 34;
+  // Padding sized for fontSize=20 axis labels (≈ 19 px wide for 6 chars,
+  // ≈ 24 px tall). Bumping fonts without growing padding clips labels.
+  const padL = 100;
+  const padR = 24;
+  const padTopPrice = 22;
+  const padBetween = 36;
+  const padBottom = 50;
   const H = padTopPrice + PRICE_H + padBetween + CONF_H + padBottom;
+  const FS_TICK = 20;
+  const FS_LABEL = 20;
 
   const { history, q10, q25, q50, q75, q90, confidence } = forecast;
   const histN = history.length;
@@ -497,8 +508,9 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
     : '';
   const confLine = confidence.length ? `M ${confLinePoints.join(' L ')}` : '';
 
-  // Axis tick values
-  const priceTicks = [yMax, (yMax + yMin) / 2, yMin];
+  // Axis tick values — 5 evenly-spaced over the y-domain so the chart is
+  // readable as a numeric reference, not just a shape.
+  const priceTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => yMin + (yMax - yMin) * (1 - f));
 
   // Hover state — nearest day index (history span 0..histN-1, forecast histN..total-1).
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -561,11 +573,14 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
         <line x1={padL} y1={padTopPrice} x2={padL} y2={padTopPrice + PRICE_H} stroke="currentColor" strokeWidth={0.5} opacity={0.3} />
         <line x1={padL} y1={padTopPrice + PRICE_H} x2={W - padR} y2={padTopPrice + PRICE_H} stroke="currentColor" strokeWidth={0.5} opacity={0.3} />
 
-        {/* Price y-ticks */}
+        {/* Price y-ticks + faint horizontal gridlines so values are
+            readable as numbers, not just shape. dy=".35em" centres
+            text vertically on the tick line at any font size. */}
         {priceTicks.map((p, i) => (
           <g key={i}>
-            <line x1={padL - 4} y1={yAtPrice(p)} x2={padL} y2={yAtPrice(p)} stroke="currentColor" strokeWidth={0.5} opacity={0.4} />
-            <text x={padL - 6} y={yAtPrice(p) + 3} textAnchor="end" fontSize={15} fill="currentColor" opacity={0.7}>
+            <line x1={padL} y1={yAtPrice(p)} x2={W - padR} y2={yAtPrice(p)} stroke="currentColor" strokeWidth={0.3} opacity={0.12} />
+            <line x1={padL - 6} y1={yAtPrice(p)} x2={padL} y2={yAtPrice(p)} stroke="currentColor" strokeWidth={0.5} opacity={0.4} />
+            <text x={padL - 10} y={yAtPrice(p)} dy=".35em" textAnchor="end" fontSize={FS_TICK} fill="currentColor" opacity={0.75}>
               {p.toFixed(2)}
             </text>
           </g>
@@ -597,9 +612,9 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
         <line x1={padL} y1={confTop + CONF_H} x2={W - padR} y2={confTop + CONF_H} stroke="currentColor" strokeWidth={0.5} opacity={0.3} />
         {[0, 25, 50, 75, 100].map((v) => (
           <g key={v}>
-            <line x1={padL - 4} y1={yAtConf(v)} x2={padL} y2={yAtConf(v)} stroke="currentColor" strokeWidth={0.5} opacity={0.4} />
+            <line x1={padL - 6} y1={yAtConf(v)} x2={padL} y2={yAtConf(v)} stroke="currentColor" strokeWidth={0.5} opacity={0.4} />
             <line x1={padL} y1={yAtConf(v)} x2={W - padR} y2={yAtConf(v)} stroke="currentColor" strokeWidth={0.3} opacity={0.15} />
-            <text x={padL - 6} y={yAtConf(v) + 3} textAnchor="end" fontSize={15} fill="currentColor" opacity={0.7}>
+            <text x={padL - 10} y={yAtConf(v)} dy=".35em" textAnchor="end" fontSize={FS_TICK} fill="currentColor" opacity={0.75}>
               {v}
             </text>
           </g>
@@ -613,14 +628,16 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
         {Array.from({ length: total }, (_, i) => i)
           .filter((i) => i === 0 || i === histN - 1 || i === total - 1 || (histN - 1 - i) % 10 === 0 || (i - (histN - 1)) % 5 === 0)
           .map((i) => (
-            <text key={i} x={xAt(i)} y={H - 8} textAnchor="middle" fontSize={15} fill="currentColor" opacity={0.7}>
+            <text key={i} x={xAt(i)} y={H - 12} textAnchor="middle" fontSize={FS_TICK} fill="currentColor" opacity={0.75}>
               {dayLabel(i)}
             </text>
           ))}
 
-        {/* Panel labels */}
-        <text x={padL + 4} y={padTopPrice + 10} fontSize={15} fill="currentColor" opacity={0.6}>price (USD)</text>
-        <text x={padL + 4} y={confTop + 10} fontSize={15} fill="currentColor" opacity={0.6}>confidence (0-100)</text>
+        {/* Panel labels — anchor top-left of each panel. dy=".9em" pushes
+            the text fully under the (otherwise zero-height) baseline so
+            it sits inside the panel rather than overlapping the frame. */}
+        <text x={padL + 8} y={padTopPrice} dy=".9em" fontSize={FS_LABEL} fill="currentColor" opacity={0.6}>price (USD)</text>
+        <text x={padL + 8} y={confTop} dy=".9em" fontSize={FS_LABEL} fill="currentColor" opacity={0.6}>confidence (0-100)</text>
 
         {/* Hover overlay */}
         {hoverX != null && (
@@ -646,7 +663,7 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
           the "jiggle"). nowrap + overflow-hidden cap a wide line so a
           long tooltip can't push the strip taller and re-trigger the
           reflow we're trying to avoid. */}
-      <div className="h-6 mt-2 flex items-center text-[11px] tabular-nums overflow-hidden whitespace-nowrap">
+      <div className="h-7 mt-2 flex items-center text-sm tabular-nums overflow-hidden whitespace-nowrap">
         {hoverIdx != null && (
           <HoverTooltip
             forecast={forecast}
