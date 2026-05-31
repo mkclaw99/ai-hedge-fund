@@ -63,11 +63,21 @@ def is_fresh(
 ) -> bool:
     """Whether a cached entry should still be served.
 
-    Immutable (past as-of) → always fresh. Volatile (today/undatable) → fresh
-    only while younger than *volatile_ttl*, after which a newer version may
+    Immutable (past as-of) → always fresh. Volatile (today) → fresh only
+    while younger than *volatile_ttl*, after which a newer version may
     exist and it should be re-fetched.
+
+    Date-less keys (e.g. ``"AAPL"``, ``"AAPL_ttm"``) are treated as
+    **accumulated history buckets** — the bucket itself never expires;
+    its trailing edge is refreshed by the api.py accessor's own
+    tail-refresh logic, not by invalidating the whole bucket every
+    volatile_ttl seconds. Without this exemption a 36-year price bucket
+    would be thrown away every 6 hours, defeating the point of caching.
     """
     if is_immutable(cache_key, today):
+        return True
+    # No date in key ⇒ ticker-only bucket; managed by caller.
+    if parse_as_of(cache_key) is None:
         return True
     ttl = default_volatile_ttl() if volatile_ttl is None else volatile_ttl
     return age_seconds <= ttl
