@@ -20,6 +20,7 @@ from src.agents.mohnish_pabrai import mohnish_pabrai_agent
 from src.agents.nassim_taleb import nassim_taleb_agent
 from src.agents.news_sentiment import news_sentiment_agent
 from src.agents.growth_agent import growth_analyst_agent
+from src.agents.forecaster import forecaster_agent
 
 # Define analyst configuration - single source of truth
 ANALYST_CONFIG = {
@@ -174,6 +175,14 @@ ANALYST_CONFIG = {
         "agent_func": valuation_analyst_agent,
         "type": "analyst",
         "order": 18,
+    },
+    "forecaster": {
+        "display_name": "Time Series Forecaster",
+        "description": "Chronos-2 Price Forecaster",
+        "investing_style": "Runs Amazon's Chronos-2 foundation model (120M params, encoder-only T5-style) on recent daily closes to produce a probabilistic 10-day price forecast, and maps the q10/q50/q90 fan to a directional signal whose confidence reflects how unanimously the quantiles agree.",
+        "agent_func": forecaster_agent,
+        "type": "analyst",
+        "order": 19,
     },
 }
 
