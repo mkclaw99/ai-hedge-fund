@@ -36,7 +36,13 @@ logger = logging.getLogger(__name__)
 _MODEL_ID = "amazon/chronos-2"
 _CONTEXT_LEN = 256              # last N daily closes fed to the model
 _PRED_LEN = 10                  # trading-day horizon (~2 weeks)
-_QUANTILES = [0.1, 0.5, 0.9]    # probabilistic fan width
+# Quantiles requested from Chronos at the forecast step. Five rather than
+# three gives us the nested-band fan chart idiom (inner 50% interval
+# q25-q75, outer 80% interval q10-q90) used in central-bank reports. No
+# extra compute — it's the same forward pass, just more quantile reads.
+# Signal mapping deliberately still only uses q10/q50/q90 (see
+# _build_signal) so PM track-record stays consistent across versions.
+_QUANTILES = [0.1, 0.25, 0.5, 0.75, 0.9]
 _NEUTRAL_PCT = 1.0              # |q50_pct| below this → neutral
 
 _pipeline = None
@@ -161,19 +167,31 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
         last_close = float(series_by_ticker[ticker][-1])
         # qt shape: (1, prediction_length, num_quantiles). The leading dim
         # is the (per-series) batch axis from Chronos's internal padding.
-        # Quantile order matches _QUANTILES (= [0.1, 0.5, 0.9]).
+        # Quantile order matches _QUANTILES (= [0.1, 0.25, 0.5, 0.75, 0.9]).
         try:
             arr = qt.detach().cpu().numpy() if hasattr(qt, "detach") else np.asarray(qt)
             arr = np.squeeze(arr, axis=0) if arr.ndim == 3 else arr
             q10_traj = arr[:, 0].astype(float).tolist()
-            q50_traj = arr[:, 1].astype(float).tolist()
-            q90_traj = arr[:, 2].astype(float).tolist()
+            q25_traj = arr[:, 1].astype(float).tolist()
+            q50_traj = arr[:, 2].astype(float).tolist()
+            q75_traj = arr[:, 3].astype(float).tolist()
+            q90_traj = arr[:, 4].astype(float).tolist()
         except Exception as e:
             logger.warning("Chronos-2 unparseable output for %s: %s", ticker, e)
             continue
-        # Signal mapping uses the final step's quantiles only — that's the
-        # horizon the user committed to forecasting against.
+        # Signal mapping uses the final step's outer quantiles only — q25/q75
+        # widen the inner band on the chart but don't change the directional
+        # signal the PM sees, so track-record stays consistent across versions.
         signals[ticker] = _build_signal(last_close, q10_traj[-1], q50_traj[-1], q90_traj[-1])
+        # Per-step confidence — precision of the predictive distribution at
+        # each step, derived from the 80% prediction interval's width
+        # as a fraction of the last close. Narrow band = confident,
+        # wide band = uncertain. Decays monotonically as the horizon
+        # extends, which is the property that makes the curve worth
+        # drawing. Distinct from the agent's *signal* confidence at the
+        # end of horizon (magnitude × agreement, see _build_signal),
+        # which measures directionality, not precision.
+        confidence_traj = _per_step_confidence(last_close, q10_traj, q90_traj)
         # Per-ticker chart payload, embedded into the analysis Markdown so
         # the existing SSE 'analysis' channel carries it through without a
         # schema change. ForecasterNode parses the fence; other components
@@ -182,8 +200,11 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
         chart = json.dumps({
             "history": [round(x, 4) for x in history],
             "q10": [round(x, 4) for x in q10_traj],
+            "q25": [round(x, 4) for x in q25_traj],
             "q50": [round(x, 4) for x in q50_traj],
+            "q75": [round(x, 4) for x in q75_traj],
             "q90": [round(x, 4) for x in q90_traj],
+            "confidence": confidence_traj,
             "horizon_days": _PRED_LEN,
         })
         # Hand-rolled report — no LLM call. The forecaster's whole point is
@@ -274,6 +295,33 @@ def _build_signal(last: float, q10: float, q50: float, q90: float) -> dict:
             "rule": rule,
         },
     }
+
+
+def _per_step_confidence(last: float, q10_traj: list, q90_traj: list) -> list[int]:
+    """Confidence at each forecast step, derived from the fan width.
+
+    Defined as the 80% prediction interval's width as a fraction of the
+    last close, then mapped through a smooth decay so common values land
+    in 0-100:
+
+      - 2%  width → 83 (very tight; rare past a few days)
+      - 5%  width → 67 (typical day-1 to day-5 for large-caps)
+      - 10% width → 50 (typical end-of-horizon)
+      - 20% width → 33 (volatile names)
+      - 30% width → 25 (low-quality forecast territory)
+
+    The curve decays monotonically as the horizon extends — that's the
+    property that makes it worth visualising. Distinct from the agent's
+    *signal* confidence (magnitude × agreement at horizon end), which
+    measures directionality, not precision.
+    """
+    out: list[int] = []
+    base = max(last, 1e-9)
+    for q10, q90 in zip(q10_traj, q90_traj):
+        width_pct = max(0.0, (q90 - q10) / base * 100.0)
+        conf = 100.0 / (1.0 + width_pct / 10.0)
+        out.append(int(round(max(0.0, min(100.0, conf)))))
+    return out
 
 
 def _render_report(sig: dict) -> str:
