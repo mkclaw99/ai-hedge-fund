@@ -17,14 +17,27 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
+import { useNodeState } from '@/hooks/use-node-state';
 import { cn } from '@/lib/utils';
 import { getFlowMemory } from '@/services/memory-api';
 import { type AgentNode } from '../types';
 import { getStatusColor } from '../utils';
 import { AgentOutputDialog } from './agent-output-dialog';
 import { NodeShell } from './node-shell';
+
+// Chronos-2 hard limits (from the model card): context up to 8192,
+// prediction up to 1024. Sensible defaults match the module constants
+// in the backend agent so a freshly-dropped node behaves identically
+// to the pre-config-feature version.
+const CTX_MIN = 32;
+const CTX_MAX = 8192;
+const CTX_DEFAULT = 256;
+const PRED_MIN = 1;
+const PRED_MAX = 1024;
+const PRED_DEFAULT = 10;
 
 // --- Types and parsing ----------------------------------------------------
 
@@ -110,6 +123,16 @@ export function ForecasterNode({
   const isInProgress = status === 'IN_PROGRESS';
   const [isOutputDialogOpen, setIsOutputDialogOpen] = useState(false);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
+
+  // Per-node Chronos-2 length config — stored via useNodeState so the
+  // Play-trigger node (portfolio-start / stock-analyzer) can read it
+  // back via getNodeInternalState when assembling the run request, and
+  // so the values survive flow reload via the standard internal_state
+  // restore path.
+  const [contextLen, setContextLen] = useNodeState<number>(id, 'forecasterContextLen', CTX_DEFAULT);
+  const [predictionLen, setPredictionLen] = useNodeState<number>(id, 'forecasterPredictionLen', PRED_DEFAULT);
+  const clampCtx = (n: number) => Math.max(CTX_MIN, Math.min(CTX_MAX, Math.round(n) || CTX_DEFAULT));
+  const clampPred = (n: number) => Math.max(PRED_MIN, Math.min(PRED_MAX, Math.round(n) || PRED_DEFAULT));
 
   // Live runtime forecasts: {ticker → latest forecast}, newest-first scan
   // of the SSE message history that NodeContext accumulates during a run.
@@ -207,6 +230,63 @@ export function ForecasterNode({
                 {nodeData.ticker && <span className="ml-1">({nodeData.ticker})</span>}
               </div>
             )}
+
+            {/* Chronos-2 length controls — two number inputs sized for
+                this Chronos's published limits. Labels visible, tooltips
+                explain the trade-offs (more context = slower forward
+                pass, more prediction = wider fan / lower confidence). */}
+            <TooltipProvider>
+              <div className="text-subtitle text-primary flex items-center gap-1 mt-1">Chronos-2 Settings</div>
+              <div className="grid grid-cols-2 gap-2">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="flex flex-col gap-0.5">
+                      <label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        Context days
+                      </label>
+                      <input
+                        type="number"
+                        min={CTX_MIN}
+                        max={CTX_MAX}
+                        step={1}
+                        value={contextLen}
+                        onChange={(e) => setContextLen(Number(e.target.value) || CTX_DEFAULT)}
+                        onBlur={(e) => setContextLen(clampCtx(Number(e.target.value)))}
+                        className="w-full rounded border border-border bg-node/60 px-2 py-1 text-sm tabular-nums text-foreground focus:outline-none focus:border-primary/50"
+                      />
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-[260px] text-xs">
+                    Past daily closes Chronos-2 reads as context. Range {CTX_MIN}–{CTX_MAX}.
+                    More context generally improves the forecast but costs a slower forward pass.
+                  </TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="flex flex-col gap-0.5">
+                      <label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        Prediction days
+                      </label>
+                      <input
+                        type="number"
+                        min={PRED_MIN}
+                        max={PRED_MAX}
+                        step={1}
+                        value={predictionLen}
+                        onChange={(e) => setPredictionLen(Number(e.target.value) || PRED_DEFAULT)}
+                        onBlur={(e) => setPredictionLen(clampPred(Number(e.target.value)))}
+                        className="w-full rounded border border-border bg-node/60 px-2 py-1 text-sm tabular-nums text-foreground focus:outline-none focus:border-primary/50"
+                      />
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-[260px] text-xs">
+                    Trading days to forecast forward. Range {PRED_MIN}–{PRED_MAX}.
+                    Longer horizons produce wider fans (lower confidence) — Chronos is most
+                    accurate at the short end.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            </TooltipProvider>
 
             <div className="text-subtitle text-primary flex items-center justify-between gap-1 mt-1">
               <span>Forecast</span>

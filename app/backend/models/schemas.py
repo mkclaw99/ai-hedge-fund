@@ -175,6 +175,11 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     research_company_mandate: Optional[str] = None  # Fundamental Companies node: the extraction lens
     research_max_companies: Optional[int] = 10
     research_schedule: Optional[str] = "off"  # off | hourly | daily | weekly — auto-refresh cadence
+    # Chronos-2 per-node config (Time Series Forecaster). None → module defaults
+    # (CONTEXT_LEN=256, PRED_LEN=10). Clamped to the model's published limits
+    # in the agent itself, so a bad input never crashes the run.
+    forecaster_context_len: Optional[int] = None
+    forecaster_prediction_len: Optional[int] = None
     # When True (and a Trading Account node is in the flow with Auto-trade on), the
     # PM's per-ticker decisions are submitted as market orders on the user's Alpaca
     # PAPER account. Default off — even paper orders are a real action.
