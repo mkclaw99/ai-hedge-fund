@@ -329,7 +329,10 @@ function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onT
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-w-[920px] w-[92vw] bg-node border border-border"
+        // Fill the screen with a small breathing margin. The chart inside
+        // grows to match: its viewBox is sized for this footprint so the
+        // extra space shows more detail rather than being a blow-up.
+        className="!max-w-[96vw] w-[96vw] !max-h-[92vh] h-[92vh] bg-node border border-border overflow-y-auto p-4 sm:p-6 flex flex-col gap-3"
         onClick={(e) => e.stopPropagation()}
       >
         <DialogHeader>
@@ -370,7 +373,10 @@ function DetailBody({
   const t = tone(forecast);
 
   return (
-    <div className="flex flex-col gap-3 text-foreground">
+    // flex-1 + min-h-0 so this fills the DialogContent's flex column,
+    // which lets the chart child claim all leftover height. Without
+    // min-h-0 flex items refuse to shrink below their content size.
+    <div className="flex-1 min-h-0 flex flex-col gap-3 text-foreground">
       {/* Ticker selector */}
       {tickers.length > 1 && (
         <div className="flex flex-wrap gap-1">
@@ -426,15 +432,18 @@ function Cell({ title, value, sub, className }: { title: string; value: string; 
 
 function DetailChart({ forecast }: { forecast: ForecastPayload }) {
   // Geometry. Two stacked panels share x; price on top (taller), confidence
-  // strip below. Generous left/bottom padding for labels.
-  const W = 880;
-  const PRICE_H = 280;
-  const CONF_H = 110;
-  const padL = 56;
-  const padR = 12;
-  const padTopPrice = 12;
-  const padBetween = 18;
-  const padBottom = 26;
+  // strip below. ViewBox sized for a wide-screen dialog (~2.3:1 aspect)
+  // so it doesn't get letterboxed against a 96vw-wide container — the
+  // chart fills the surface rather than being a small sprite in a big
+  // dialog. Generous left/bottom padding for axis labels.
+  const W = 1600;
+  const PRICE_H = 460;
+  const CONF_H = 180;
+  const padL = 72;
+  const padR = 16;
+  const padTopPrice = 16;
+  const padBetween = 26;
+  const padBottom = 34;
   const H = padTopPrice + PRICE_H + padBetween + CONF_H + padBottom;
 
   const { history, q10, q25, q50, q75, q90, confidence } = forecast;
@@ -522,12 +531,17 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
   };
 
   return (
-    <div className="rounded border border-border bg-node/40 p-2">
+    // flex-1 + min-h-0 lets this take all the remaining vertical space
+    // inside the flex-column dialog. Without min-h-0 the flex item refuses
+    // to shrink below content size and overflows the viewport.
+    <div className="flex-1 min-h-0 rounded border border-border bg-node/40 p-2 flex flex-col">
       <svg
         ref={svgRef}
         width="100%"
+        height="100%"
         viewBox={`0 0 ${W} ${H}`}
-        className="block text-foreground"
+        preserveAspectRatio="xMidYMid meet"
+        className="block text-foreground flex-1 min-h-0"
         onMouseMove={onMove}
         onMouseLeave={() => setHoverIdx(null)}
       >
@@ -539,7 +553,7 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
         {priceTicks.map((p, i) => (
           <g key={i}>
             <line x1={padL - 4} y1={yAtPrice(p)} x2={padL} y2={yAtPrice(p)} stroke="currentColor" strokeWidth={0.5} opacity={0.4} />
-            <text x={padL - 6} y={yAtPrice(p) + 3} textAnchor="end" fontSize={10} fill="currentColor" opacity={0.7}>
+            <text x={padL - 6} y={yAtPrice(p) + 3} textAnchor="end" fontSize={15} fill="currentColor" opacity={0.7}>
               {p.toFixed(2)}
             </text>
           </g>
@@ -573,7 +587,7 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
           <g key={v}>
             <line x1={padL - 4} y1={yAtConf(v)} x2={padL} y2={yAtConf(v)} stroke="currentColor" strokeWidth={0.5} opacity={0.4} />
             <line x1={padL} y1={yAtConf(v)} x2={W - padR} y2={yAtConf(v)} stroke="currentColor" strokeWidth={0.3} opacity={0.15} />
-            <text x={padL - 6} y={yAtConf(v) + 3} textAnchor="end" fontSize={10} fill="currentColor" opacity={0.7}>
+            <text x={padL - 6} y={yAtConf(v) + 3} textAnchor="end" fontSize={15} fill="currentColor" opacity={0.7}>
               {v}
             </text>
           </g>
@@ -587,14 +601,14 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
         {Array.from({ length: total }, (_, i) => i)
           .filter((i) => i === 0 || i === histN - 1 || i === total - 1 || (histN - 1 - i) % 10 === 0 || (i - (histN - 1)) % 5 === 0)
           .map((i) => (
-            <text key={i} x={xAt(i)} y={H - 8} textAnchor="middle" fontSize={10} fill="currentColor" opacity={0.7}>
+            <text key={i} x={xAt(i)} y={H - 8} textAnchor="middle" fontSize={15} fill="currentColor" opacity={0.7}>
               {dayLabel(i)}
             </text>
           ))}
 
         {/* Panel labels */}
-        <text x={padL + 4} y={padTopPrice + 10} fontSize={10} fill="currentColor" opacity={0.6}>price (USD)</text>
-        <text x={padL + 4} y={confTop + 10} fontSize={10} fill="currentColor" opacity={0.6}>confidence (0-100)</text>
+        <text x={padL + 4} y={padTopPrice + 10} fontSize={15} fill="currentColor" opacity={0.6}>price (USD)</text>
+        <text x={padL + 4} y={confTop + 10} fontSize={15} fill="currentColor" opacity={0.6}>confidence (0-100)</text>
 
         {/* Hover overlay */}
         {hoverX != null && (
