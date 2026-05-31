@@ -396,6 +396,14 @@ export function ForecasterNode({
           activeTicker={activeTicker}
           onTickerChange={setActiveTicker}
           forecastsByTicker={forecastsByTicker}
+          controls={{
+            barFrequency,
+            setBarFrequency,
+            contextLen,
+            setContextLen,
+            predictionLen,
+            setPredictionLen,
+          }}
         />
       </CardContent>
     </NodeShell>
@@ -484,6 +492,20 @@ function Stat({ label, value, cls }: { label: string; value: string; cls?: strin
 
 // --- Detail dialog --------------------------------------------------------
 
+// Shared settings shape — passed by ForecasterNode to the dialog so the
+// dialog can mirror the per-node Chronos-2 controls and edit them too.
+// Values are sourced from useNodeState in the parent; setters here just
+// pipe back into that hook, so state stays single-source and changes are
+// visible in both UIs immediately.
+interface ChronosControls {
+  barFrequency: BarFrequency;
+  setBarFrequency: (v: BarFrequency) => void;
+  contextLen: number;
+  setContextLen: (v: number) => void;
+  predictionLen: number;
+  setPredictionLen: (v: number) => void;
+}
+
 interface DetailDialogProps {
   isOpen: boolean;
   onOpenChange: (v: boolean) => void;
@@ -491,9 +513,10 @@ interface DetailDialogProps {
   activeTicker: string | null;
   onTickerChange: (t: string) => void;
   forecastsByTicker: Record<string, ForecastPayload>;
+  controls: ChronosControls;
 }
 
-function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onTickerChange, forecastsByTicker }: DetailDialogProps) {
+function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onTickerChange, forecastsByTicker, controls }: DetailDialogProps) {
   const forecast = activeTicker ? forecastsByTicker[activeTicker] : null;
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
@@ -510,6 +533,7 @@ function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onT
             <span>Chronos-2 Forecast{activeTicker ? ` · ${activeTicker}` : ''}</span>
           </DialogTitle>
         </DialogHeader>
+        <DialogChronosSettings controls={controls} />
         {forecast ? (
           <DetailBody forecast={forecast} tickers={tickers} activeTicker={activeTicker} onTickerChange={onTickerChange} />
         ) : (
@@ -517,6 +541,95 @@ function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onT
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+// Module-level clamps so the dialog and node-body inputs apply the same
+// bounds. CTX_MIN/MAX etc come from the file's top — Chronos-2 model card.
+const clampCtxValue = (n: number) => Math.max(CTX_MIN, Math.min(CTX_MAX, Math.round(n) || CTX_DEFAULT));
+const clampPredValue = (n: number) => Math.max(PRED_MIN, Math.min(PRED_MAX, Math.round(n) || PRED_DEFAULT));
+
+function DialogChronosSettings({ controls }: { controls: ChronosControls }) {
+  const { barFrequency, setBarFrequency, contextLen, setContextLen, predictionLen, setPredictionLen } = controls;
+  const activeFreq = FREQ_OPTIONS.find((o) => o.value === barFrequency) ?? FREQ_OPTIONS[0];
+  return (
+    <TooltipProvider>
+      <div className="rounded border border-border bg-node/40 p-3">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Chronos-2 Settings</div>
+        <div className="grid grid-cols-3 gap-3">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Bar frequency
+                </label>
+                <select
+                  value={barFrequency}
+                  onChange={(e) => setBarFrequency(e.target.value as BarFrequency)}
+                  className="w-full rounded border border-border bg-node/60 px-3 py-1.5 text-base text-foreground focus:outline-none focus:border-primary/50"
+                >
+                  {FREQ_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-[320px] text-xs">
+              {activeFreq.hint}
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Context bars
+                </label>
+                <input
+                  type="number"
+                  min={CTX_MIN}
+                  max={CTX_MAX}
+                  step={1}
+                  value={contextLen}
+                  onChange={(e) => setContextLen(Number(e.target.value) || CTX_DEFAULT)}
+                  onBlur={(e) => setContextLen(clampCtxValue(Number(e.target.value)))}
+                  className="w-full rounded border border-border bg-node/60 px-3 py-1.5 text-base tabular-nums text-foreground focus:outline-none focus:border-primary/50"
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-[320px] text-xs">
+              Past bars Chronos-2 reads as context. Range {CTX_MIN}–{CTX_MAX}.
+              More context generally improves the forecast but costs a slower
+              forward pass. Intraday frequencies clip to available history
+              (1m≤7d, 5m≤60d, 1h≤730d).
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Prediction bars
+                </label>
+                <input
+                  type="number"
+                  min={PRED_MIN}
+                  max={PRED_MAX}
+                  step={1}
+                  value={predictionLen}
+                  onChange={(e) => setPredictionLen(Number(e.target.value) || PRED_DEFAULT)}
+                  onBlur={(e) => setPredictionLen(clampPredValue(Number(e.target.value)))}
+                  className="w-full rounded border border-border bg-node/60 px-3 py-1.5 text-base tabular-nums text-foreground focus:outline-none focus:border-primary/50"
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-[320px] text-xs">
+              Bars to forecast forward. Range {PRED_MIN}–{PRED_MAX}.
+              Longer horizons produce wider fans (lower confidence) — Chronos
+              is most accurate at the short end.
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+    </TooltipProvider>
   );
 }
 
