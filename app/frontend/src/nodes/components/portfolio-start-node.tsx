@@ -223,6 +223,14 @@ export function PortfolioStartNode({
     const placePaperOrders = !!tradingState?.autoTrade;
     const startingBudget = Number(tradingState?.startingBudget ?? 0) || undefined;
 
+    // Time Series Forecaster node — if wired in, surface its per-node
+    // Chronos-2 length config so the backend agent picks it up.
+    // Reachable-only so a disconnected node doesn't quietly override.
+    const forecasterNode = allNodes.find((n) => reachableNodes.has(n.id) && n.type === 'forecaster-node');
+    const forecasterState = (forecasterNode ? getNodeInternalState(forecasterNode.id) : null) as any;
+    const forecasterContextLen = forecasterState?.forecasterContextLen != null ? Number(forecasterState.forecasterContextLen) : undefined;
+    const forecasterPredictionLen = forecasterState?.forecasterPredictionLen != null ? Number(forecasterState.forecasterPredictionLen) : undefined;
+
     // Check if we're in backtest mode
     if (runMode === 'backtest') {
       // Use the flow connection hook to run the backtest with selected dates
@@ -245,6 +253,8 @@ export function PortfolioStartNode({
         model_provider: primaryModel.model_provider as any,
         place_paper_orders: placePaperOrders,
         starting_budget: startingBudget,
+        forecaster_context_len: forecasterContextLen,
+        forecaster_prediction_len: forecasterPredictionLen,
         // Pass portfolio positions to backend
         portfolio_positions: portfolioPositions,
       });
@@ -266,6 +276,8 @@ export function PortfolioStartNode({
         model_provider: primaryModel.model_provider as any,
         place_paper_orders: placePaperOrders,
         starting_budget: startingBudget,
+        forecaster_context_len: forecasterContextLen,
+        forecaster_prediction_len: forecasterPredictionLen,
         start_date: threeMonthsAgo.toISOString().split('T')[0],
         end_date: today.toISOString().split('T')[0],
         initial_cash: parseFloat(initialCash) || 100000,

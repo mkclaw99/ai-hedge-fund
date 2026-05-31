@@ -60,6 +60,8 @@ export interface HedgeFundRequest extends BaseHedgeFundRequest {
   research_schedule?: string; // off | hourly | daily | weekly
   place_paper_orders?: boolean; // submit PM decisions to Alpaca PAPER (opt-in via Trading Account node)
   starting_budget?: number;     // Trading Account node's Starting Budget (drives budget-aware sizing)
+  forecaster_context_len?: number;     // Chronos-2 context window (32-8192). undef → backend default 256
+  forecaster_prediction_len?: number;  // Chronos-2 forecast horizon (1-1024). undef → backend default 10
   strategy?: StrategyConfig;    // Strategy node config — style, sizing, caps, instruments, mandate
   skip_analysts?: boolean;      // Replay strategy on cached signals (no analyst re-run, no theme resolve)
   risk_manager?: RiskManagerConfig; // Risk Manager node — vol/correlation cap overrides
@@ -92,6 +94,14 @@ export interface BacktestRequest extends BaseHedgeFundRequest {
   flow_id?: number;              // Scope wiki writes to this flow → track record sees them
   strategy?: StrategyConfig;
   risk_manager?: RiskManagerConfig;
+  // Optional flow-wide configs the Play-trigger nodes also forward in
+  // backtest mode. Previously absent from this type — call sites sent
+  // them anyway, producing a pre-existing TS2353 (and silently dropping
+  // them when properties beyond the type were narrowed elsewhere).
+  place_paper_orders?: boolean;
+  starting_budget?: number;
+  forecaster_context_len?: number;
+  forecaster_prediction_len?: number;
 }
 
 export interface BacktestDayResult {

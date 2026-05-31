@@ -89,22 +89,46 @@ def _load_pipeline():
     return _pipeline
 
 
+def _resolve_lengths(state: AgentState) -> tuple[int, int]:
+    """Read per-flow Chronos-2 lengths from the request, clamped to model limits.
+
+    Returns (context_len, prediction_len). Module-default fallback when
+    the request didn't carry the values (e.g. older clients or a
+    backtest where the ForecasterNode wasn't reachable from the Play
+    trigger). Clamp bounds match the Chronos-2 model card.
+    """
+    ctx, pred = _CONTEXT_LEN, _PRED_LEN
+    try:
+        req = state.get("metadata", {}).get("request")
+        if req is not None:
+            c = getattr(req, "forecaster_context_len", None)
+            p = getattr(req, "forecaster_prediction_len", None)
+            if c is not None:
+                ctx = max(32, min(8192, int(c)))
+            if p is not None:
+                pred = max(1, min(1024, int(p)))
+    except Exception:  # never let config parsing break the run
+        pass
+    return ctx, pred
+
+
 def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
     """Run Chronos-2 on each ticker and emit a directional signal."""
     data = state["data"]
     tickers = data["tickers"]
     end_date = data["end_date"]
     api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
+    context_len, prediction_len = _resolve_lengths(state)
 
     # Collect price history per ticker first. Fast, and lets us bail out
     # cleanly if the model is unavailable without paying the load cost.
     series_by_ticker: dict[str, np.ndarray] = {}
     for ticker in tickers:
         progress.update_status(agent_id, ticker, "Fetching price history")
-        # Pull ~CONTEXT_LEN trading days. Overshoot by 1.6× on calendar days
-        # to cover weekends/holidays; we trim back to CONTEXT_LEN below.
+        # Pull ~context_len trading days. Overshoot by 1.6× on calendar days
+        # to cover weekends/holidays; we trim back to context_len below.
         try:
-            start = (datetime.fromisoformat(end_date) - timedelta(days=int(_CONTEXT_LEN * 1.6))).date().isoformat()
+            start = (datetime.fromisoformat(end_date) - timedelta(days=int(context_len * 1.6))).date().isoformat()
         except Exception:
             start = end_date
         prices = get_prices(ticker=ticker, start_date=start, end_date=end_date, api_key=api_key)
@@ -115,7 +139,7 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
         if df.empty or "close" not in df.columns:
             progress.update_status(agent_id, ticker, "Failed: empty price frame")
             continue
-        closes = pd.to_numeric(df["close"], errors="coerce").dropna().tail(_CONTEXT_LEN).to_numpy(dtype=np.float32)
+        closes = pd.to_numeric(df["close"], errors="coerce").dropna().tail(context_len).to_numpy(dtype=np.float32)
         if closes.size < 30:
             # Chronos can technically handle short context, but a forecast
             # off ~one month of history is noise. Drop it.
@@ -151,7 +175,7 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
     try:
         quantile_tensors, _means = pipeline.predict_quantiles(
             inputs,
-            prediction_length=_PRED_LEN,
+            prediction_length=prediction_len,
             quantile_levels=_QUANTILES,
         )
     except Exception as e:
@@ -182,7 +206,7 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
         # Signal mapping uses the final step's outer quantiles only — q25/q75
         # widen the inner band on the chart but don't change the directional
         # signal the PM sees, so track-record stays consistent across versions.
-        signals[ticker] = _build_signal(last_close, q10_traj[-1], q50_traj[-1], q90_traj[-1])
+        signals[ticker] = _build_signal(last_close, q10_traj[-1], q50_traj[-1], q90_traj[-1], horizon_days=prediction_len)
         # Per-step confidence — precision of the predictive distribution at
         # each step, derived from the 80% prediction interval's width
         # as a fraction of the last close. Narrow band = confident,
@@ -205,7 +229,7 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
             "q75": [round(x, 4) for x in q75_traj],
             "q90": [round(x, 4) for x in q90_traj],
             "confidence": confidence_traj,
-            "horizon_days": _PRED_LEN,
+            "horizon_days": prediction_len,
         })
         # Hand-rolled report — no LLM call. The forecaster's whole point is
         # Chronos-2; routing the structured reasoning dict through an LLM
@@ -235,7 +259,7 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
     return {"messages": state["messages"] + [message], "data": data}
 
 
-def _build_signal(last: float, q10: float, q50: float, q90: float) -> dict:
+def _build_signal(last: float, q10: float, q50: float, q90: float, *, horizon_days: int = _PRED_LEN) -> dict:
     """Map a forecast fan to a ``{signal, confidence, reasoning}`` dict.
 
     Direction rule (cheapest first):
@@ -291,7 +315,7 @@ def _build_signal(last: float, q10: float, q50: float, q90: float) -> dict:
         "confidence": max(0, min(100, int(confidence))),
         "reasoning": {
             "model": _MODEL_ID,
-            "horizon_days": _PRED_LEN,
+            "horizon_days": horizon_days,
             "last_close": round(last, 4),
             "forecast_end": {
                 "q10": round(q10, 4),
