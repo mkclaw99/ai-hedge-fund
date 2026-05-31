@@ -25,7 +25,6 @@ from langchain_core.messages import HumanMessage
 
 from src.graph.state import AgentState, show_agent_reasoning
 from src.tools.api import get_prices, prices_to_df
-from src.utils.analyst_report import write_analyst_report
 from src.utils.api_key import get_api_key_from_state
 from src.utils.progress import progress
 
@@ -187,11 +186,12 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
             "q90": [round(x, 4) for x in q90_traj],
             "horizon_days": _PRED_LEN,
         })
-        report = write_analyst_report(
-            agent_id, "Time Series Forecaster", ticker,
-            signals[ticker]["signal"], signals[ticker]["confidence"],
-            signals[ticker], state,
-        )
+        # Hand-rolled report — no LLM call. The forecaster's whole point is
+        # Chronos-2; routing the structured reasoning dict through an LLM
+        # for prose adds latency, cost, an API-key dependency, and confuses
+        # the user about *what* model is forecasting. The reasoning dict
+        # already says everything in plain numbers; we render it directly.
+        report = _render_report(signals[ticker])
         analysis = f"{report}\n\n{_CHART_FENCE_OPEN}\n{chart}\n{_CHART_FENCE_CLOSE}\n"
         progress.update_status(agent_id, ticker, "Done", analysis=analysis)
 
@@ -274,3 +274,48 @@ def _build_signal(last: float, q10: float, q50: float, q90: float) -> dict:
             "rule": rule,
         },
     }
+
+
+def _render_report(sig: dict) -> str:
+    """Render a structured forecaster signal as a Markdown summary.
+
+    Hand-rolled (no LLM) on purpose — the reasoning dict already carries
+    everything a reader needs in plain numbers, and the user's hedge fund
+    only has a Gemini key configured; routing this through an LLM picker
+    would imply the *forecast* depends on the LLM, which it doesn't. The
+    forecast is Chronos-2; this is just its readout.
+    """
+    r = sig.get("reasoning", {}) or {}
+    fc = r.get("forecast_end", {}) or {}
+    pct = r.get("pct_change", {}) or {}
+    last = r.get("last_close")
+    horizon = r.get("horizon_days", _PRED_LEN)
+    signal = str(sig.get("signal", "neutral")).upper()
+    confidence = int(sig.get("confidence", 0))
+
+    def _pct(v) -> str:
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return "—"
+        return f"{'+' if v >= 0 else ''}{v:.2f}%"
+
+    def _px(v) -> str:
+        try:
+            return f"${float(v):.2f}"
+        except (TypeError, ValueError):
+            return "—"
+
+    return (
+        f"**Signal:** {signal} · **Confidence:** {confidence}% · "
+        f"**Horizon:** {horizon} trading days\n\n"
+        f"**Model:** Amazon Chronos-2 — 120M-param probabilistic time-series "
+        f"foundation model, run locally on the cached weights.\n\n"
+        f"**At horizon end** vs last close ({_px(last)}):\n"
+        f"- Lower bound (q10): {_pct(pct.get('q10'))} ({_px(fc.get('q10'))})\n"
+        f"- Median (q50): {_pct(pct.get('q50'))} ({_px(fc.get('q50'))})\n"
+        f"- Upper bound (q90): {_pct(pct.get('q90'))} ({_px(fc.get('q90'))})\n\n"
+        f"**Rule:** {r.get('rule', '—')}\n\n"
+        f"The fan chart on the node body shows the most recent history and the "
+        f"per-step q10/q50/q90 trajectory."
+    )

@@ -1,25 +1,26 @@
 // Custom node for the Time Series Forecaster analyst.
 //
-// Renders the same shell/status/model selector as the generic agent-node,
-// plus an inline SVG fan chart per ticker: recent history → forecast
-// median with a translucent q10/q90 band. Click a ticker chip to switch.
+// Renders an inline SVG fan chart per ticker on the node body: recent
+// history → forecast median with a translucent q10/q90 band. Click a
+// ticker chip to switch.
+//
+// Deliberately has no Model selector. The forecast is produced by
+// Amazon Chronos-2 (loaded locally from the HuggingFace cache); there
+// is no per-flow LLM choice involved, so showing an LLM picker would
+// imply a dependency that doesn't exist.
 //
 // Data path: the backend agent (src/agents/forecaster.py) appends a
-// ```forecast-data``` JSON fence to the per-ticker analysis Markdown that
-// already rides the SSE 'analysis' channel. We parse it out of the
+// ```forecast-data``` JSON fence to the per-ticker analysis Markdown
+// that already rides the SSE 'analysis' channel. We parse it out of the
 // per-ticker messages stored in node-context — no SSE schema change.
 
 import { type NodeProps } from '@xyflow/react';
 import { LineChart } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { CardContent } from '@/components/ui/card';
-import { ModelSelector } from '@/components/ui/llm-selector';
 import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
-import { getDefaultModel, getModels, LanguageModel } from '@/data/models';
-import { useNodeState } from '@/hooks/use-node-state';
 import { cn } from '@/lib/utils';
 import { type AgentNode } from '../types';
 import { getStatusColor } from '../utils';
@@ -58,7 +59,7 @@ export function ForecasterNode({
   isConnectable,
 }: NodeProps<AgentNode>) {
   const { currentFlowId } = useFlowContext();
-  const { getAgentNodeDataForFlow, setAgentModel, getAgentModel } = useNodeContext();
+  const { getAgentNodeDataForFlow } = useNodeContext();
 
   const agentNodeData = getAgentNodeDataForFlow(currentFlowId?.toString() || null);
   const nodeData = agentNodeData[id] || {
@@ -72,33 +73,8 @@ export function ForecasterNode({
   const isInProgress = status === 'IN_PROGRESS';
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
-  const [availableModels, setAvailableModels] = useNodeState<LanguageModel[]>(id, 'availableModels', []);
-  const [selectedModel, setSelectedModel] = useNodeState<LanguageModel | null>(id, 'selectedModel', null);
-
-  useEffect(() => {
-    const loadModels = async () => {
-      try {
-        const [models, defaultModel] = await Promise.all([getModels(), getDefaultModel()]);
-        setAvailableModels(models);
-        if (!selectedModel && defaultModel) setSelectedModel(defaultModel);
-      } catch (e) {
-        console.error('Failed to load models:', e);
-      }
-    };
-    loadModels();
-  }, [setAvailableModels]);
-
-  useEffect(() => {
-    const flowId = currentFlowId?.toString() || null;
-    const currentContextModel = getAgentModel(flowId, id);
-    if (selectedModel !== currentContextModel) {
-      setAgentModel(flowId, id, selectedModel);
-    }
-  }, [selectedModel, id, currentFlowId, setAgentModel, getAgentModel]);
-
   // Build a {ticker → latest forecast} map by scanning messages newest-first
-  // and taking the first parseable payload per ticker. The user can dump
-  // older runs by re-running the flow — node-context resets messages.
+  // and taking the first parseable payload per ticker.
   const forecastsByTicker = useMemo<Record<string, ForecastPayload>>(() => {
     const out: Record<string, ForecastPayload> = {};
     const msgs = nodeData.messages || [];
@@ -114,17 +90,12 @@ export function ForecasterNode({
 
   const tickers = useMemo(() => Object.keys(forecastsByTicker).sort(), [forecastsByTicker]);
   const [activeTicker, setActiveTicker] = useState<string | null>(null);
-  // Default to the first ticker; switch automatically when the first run
-  // lands so the user sees something without clicking.
   useEffect(() => {
     if (!activeTicker && tickers.length) setActiveTicker(tickers[0]);
     if (activeTicker && tickers.length && !tickers.includes(activeTicker)) setActiveTicker(tickers[0] ?? null);
   }, [tickers, activeTicker]);
 
   const activeForecast = activeTicker ? forecastsByTicker[activeTicker] : null;
-
-  const handleModelChange = (model: LanguageModel | null) => setSelectedModel(model);
-  const handleUseGlobalModel = () => setSelectedModel(null);
 
   return (
     <NodeShell
@@ -154,9 +125,19 @@ export function ForecasterNode({
               </div>
             )}
 
-            {/* Forecast chart panel. Sits above the Advanced accordion so
-                it's the first thing the user sees after the status. */}
-            <div className="text-subtitle text-primary flex items-center gap-1 mt-1">Forecast</div>
+            {/* Forecast chart — the entire reason this node exists. */}
+            <div className="text-subtitle text-primary flex items-center justify-between gap-1 mt-1">
+              <span>Forecast</span>
+              {/* Make the model that *actually* produces the forecast
+                  visible right where the user would otherwise expect an
+                  LLM picker. This is a fixed-model node by design. */}
+              <span
+                className="text-[10px] uppercase tracking-wide text-muted-foreground"
+                title="Amazon Chronos-2 — 120M-param probabilistic time-series foundation model. Runs locally on cached weights; no API key required."
+              >
+                Chronos-2
+              </span>
+            </div>
             {activeForecast ? (
               <>
                 <ForecastFanChart forecast={activeForecast} />
@@ -189,31 +170,6 @@ export function ForecasterNode({
                     : 'No forecast available.'}
               </div>
             )}
-
-            <Accordion type="single" collapsible>
-              <AccordionItem value="advanced" className="border-none">
-                <AccordionTrigger className="!text-subtitle text-primary">Advanced</AccordionTrigger>
-                <AccordionContent className="pt-2">
-                  <div className="flex flex-col gap-2">
-                    <div className="text-subtitle text-primary flex items-center gap-1">Model</div>
-                    <ModelSelector
-                      models={availableModels}
-                      value={selectedModel?.model_name || ''}
-                      onChange={handleModelChange}
-                      placeholder="Auto"
-                    />
-                    {selectedModel && (
-                      <button
-                        onClick={handleUseGlobalModel}
-                        className="text-subtitle text-primary hover:text-foreground transition-colors text-left"
-                      >
-                        Reset to Auto
-                      </button>
-                    )}
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
           </div>
         </div>
         <AgentOutputDialog
