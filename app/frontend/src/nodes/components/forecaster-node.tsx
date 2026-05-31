@@ -20,6 +20,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
 import { cn } from '@/lib/utils';
+import { getFlowMemory } from '@/services/memory-api';
 import { type AgentNode } from '../types';
 import { getStatusColor } from '../utils';
 import { AgentOutputDialog } from './agent-output-dialog';
@@ -110,8 +111,9 @@ export function ForecasterNode({
   const [isOutputDialogOpen, setIsOutputDialogOpen] = useState(false);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
 
-  // {ticker → latest forecast}, newest-first scan of message history.
-  const forecastsByTicker = useMemo<Record<string, ForecastPayload>>(() => {
+  // Live runtime forecasts: {ticker → latest forecast}, newest-first scan
+  // of the SSE message history that NodeContext accumulates during a run.
+  const runtimeForecasts = useMemo<Record<string, ForecastPayload>>(() => {
     const out: Record<string, ForecastPayload> = {};
     const msgs = nodeData.messages || [];
     for (let i = msgs.length - 1; i >= 0; i--) {
@@ -123,6 +125,51 @@ export function ForecasterNode({
     }
     return out;
   }, [nodeData.messages]);
+
+  // Wiki-rehydrated forecasts. NodeContext is purged on page reload (see
+  // flow-tab-content.tsx — "Runtime execution data should start fresh"),
+  // but the forecaster persists its full trajectory inside each Insight's
+  // reasoning Markdown via the same `forecast-data` fence. We pull
+  // /memory?flow_id=… on mount and parse the fence out per ticker so the
+  // chart reappears after F5.
+  const [rehydrated, setRehydrated] = useState<Record<string, ForecastPayload>>({});
+  const flowIdNum = currentFlowId != null ? Number(currentFlowId) : null;
+  useEffect(() => {
+    if (flowIdNum == null) return;
+    let cancelled = false;
+    getFlowMemory(flowIdNum)
+      .then((mem) => {
+        if (cancelled) return;
+        const next: Record<string, ForecastPayload> = {};
+        for (const t of mem.tickers || []) {
+          // The wiki keys analyst names via normalize_analyst_name —
+          // 'forecaster_agent' → 'Forecaster' (not 'Time Series
+          // Forecaster' as the bench shows). Match case-insensitively
+          // so a future rename of either side doesn't silently break.
+          const row = (t.analysts || []).find(
+            (a) => a.analyst?.toLowerCase() === 'forecaster' || a.analyst?.toLowerCase() === 'time series forecaster',
+          );
+          const fc = extractForecast(row?.reasoning);
+          if (fc) next[t.ticker] = fc;
+        }
+        setRehydrated(next);
+      })
+      .catch(() => {
+        // Fail-open: no rehydration is the placeholder state, not an error.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [flowIdNum]);
+
+  // Prefer live runtime data — it's always fresher than what the wiki
+  // has from a prior run. Fall back to rehydrated wiki data when the
+  // runtime stream is empty (post-reload, or before the first run on a
+  // restored flow). Merge per-ticker so a partial new run still surfaces
+  // the latest forecast for tickers it already produced.
+  const forecastsByTicker = useMemo<Record<string, ForecastPayload>>(() => {
+    return { ...rehydrated, ...runtimeForecasts };
+  }, [rehydrated, runtimeForecasts]);
 
   const tickers = useMemo(() => Object.keys(forecastsByTicker).sort(), [forecastsByTicker]);
   const [activeTicker, setActiveTicker] = useState<string | null>(null);

@@ -214,6 +214,17 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
         # already says everything in plain numbers; we render it directly.
         report = _render_report(signals[ticker])
         analysis = f"{report}\n\n{_CHART_FENCE_OPEN}\n{chart}\n{_CHART_FENCE_CLOSE}\n"
+        # Swap the structured reasoning dict for the Markdown blob we just
+        # built — same content as the SSE analysis, fence and all. Two
+        # reasons:
+        #   1. ingest_run stringifies whatever reasoning is, so a dict
+        #      becomes Python repr in the wiki — unparseable garbage.
+        #      A Markdown string is human-readable AND machine-parseable
+        #      (the fence survives intact).
+        #   2. Letting the wiki carry the chart payload is what makes
+        #      ForecasterNode able to rehydrate the chart on page reload —
+        #      it reads /memory?flow_id and parses the same fence.
+        signals[ticker]["reasoning"] = analysis
         progress.update_status(agent_id, ticker, "Done", analysis=analysis)
 
     if state["metadata"].get("show_reasoning"):
