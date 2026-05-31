@@ -133,6 +133,18 @@ export function AgentNode({
                         Reset to Auto
                       </button>
                     )}
+                    {/* Gemini thinking budget — exposed only when a
+                        Google model is selected, since the parameter is
+                        ignored on other providers. Values map to the
+                        Gemini thinkingConfig.thinkingBudget API:
+                          off  = 0     (skip thinking; Flash supports it)
+                          low  = 1024
+                          med  = 8192
+                          high = 24576 (Pro's max)
+                          dyn  = -1    (model decides) */}
+                    {selectedModel?.provider === 'Google' && (
+                      <ThinkingBudgetField id={id} />
+                    )}
                   </div>
                 </AccordionContent>
               </AccordionItem>
@@ -148,5 +160,40 @@ export function AgentNode({
         />
       </CardContent>
     </NodeShell>
+  );
+}
+
+// Gemini thinking-budget picker. Lives in the agent-node so each
+// agent can independently dial up reasoning cost (PM might want
+// 'high', a quick technical analyst 'low' or 'off'). Persisted via
+// useNodeState so it survives reload, and the Play-trigger nodes
+// pick it up via getNodeInternalState() when assembling the request.
+const THINKING_OPTIONS: { value: string; label: string; hint: string }[] = [
+  { value: 'dynamic', label: 'Dynamic (default)', hint: 'Let the model decide how much to think per prompt.' },
+  { value: 'off',     label: 'Off',               hint: 'Disable thinking entirely. Fastest. Flash models only; Pro ignores this.' },
+  { value: 'low',     label: 'Low (~1k tokens)',  hint: 'Light reasoning step before the answer.' },
+  { value: 'medium',  label: 'Medium (~8k tokens)', hint: 'Standard chain-of-thought.' },
+  { value: 'high',    label: 'High (~24k tokens)', hint: 'Maximum reasoning budget (Pro caps at 24k).' },
+];
+
+function ThinkingBudgetField({ id }: { id: string }) {
+  const [value, setValue] = useNodeState<string>(id, 'thinkingBudget', 'dynamic');
+  const active = THINKING_OPTIONS.find((o) => o.value === value) ?? THINKING_OPTIONS[0];
+  return (
+    <div className="flex flex-col gap-1 mt-1">
+      <div className="text-subtitle text-primary flex items-center gap-1" title={active.hint}>
+        Thinking
+      </div>
+      <select
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        className="w-full rounded border border-border bg-node/60 px-2 py-1 text-xs text-foreground focus:outline-none focus:border-primary/50"
+      >
+        {THINKING_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+      <div className="text-[10px] text-muted-foreground leading-snug">{active.hint}</div>
+    </div>
   );
 }

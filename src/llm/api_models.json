@@ -31,7 +31,7 @@
   },
   {
     "display_name": "Gemini 3.5 Flash",
-    "model_name": "gemini-3.5-flash-preview",
+    "model_name": "gemini-3.5-flash",
     "provider": "Google"
   }
 ]

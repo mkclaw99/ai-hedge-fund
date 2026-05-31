@@ -63,6 +63,9 @@ export interface HedgeFundRequest extends BaseHedgeFundRequest {
   forecaster_context_len?: number;     // Chronos-2 context window (32-8192). undef → backend default 256
   forecaster_prediction_len?: number;  // Chronos-2 forecast horizon (1-1024). undef → backend default 10
   forecaster_bar_frequency?: 'day' | 'hour' | '5min' | '1min'; // bar resolution; intraday via yfinance
+  // Per-agent Gemini thinking-budget enum keyed by agent node id.
+  // Ignored on non-Google models.
+  agent_thinking_budgets?: Record<string, 'off' | 'low' | 'medium' | 'high' | 'dynamic'>;
   strategy?: StrategyConfig;    // Strategy node config — style, sizing, caps, instruments, mandate
   skip_analysts?: boolean;      // Replay strategy on cached signals (no analyst re-run, no theme resolve)
   risk_manager?: RiskManagerConfig; // Risk Manager node — vol/correlation cap overrides
@@ -104,6 +107,7 @@ export interface BacktestRequest extends BaseHedgeFundRequest {
   forecaster_context_len?: number;
   forecaster_prediction_len?: number;
   forecaster_bar_frequency?: 'day' | 'hour' | '5min' | '1min';
+  agent_thinking_budgets?: Record<string, 'off' | 'low' | 'medium' | 'high' | 'dynamic'>;
 }
 
 export interface BacktestDayResult {

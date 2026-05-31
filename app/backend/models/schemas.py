@@ -184,6 +184,11 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     # '1min' (intraday via yfinance). Context/prediction lengths apply as
     # *bar counts* at the chosen frequency, not always trading days.
     forecaster_bar_frequency: Optional[str] = None
+    # Per-agent Gemini thinking budget. Map {agent_node_id → enum} where
+    # the enum is one of "off" | "low" | "medium" | "high" | "dynamic"
+    # (resolve_thinking_budget converts to token counts). None / missing
+    # entry → model default. Ignored on non-Google models.
+    agent_thinking_budgets: Optional[Dict[str, str]] = None
 
 
 class ForecasterRefreshRequest(BaseModel):

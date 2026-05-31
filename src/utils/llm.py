@@ -82,7 +82,8 @@ def call_llm(
             pass
 
     model_info = get_model_info(model_name, model_provider)
-    llm = get_model(model_name, model_provider, api_keys)
+    thinking_budget = get_agent_thinking_budget(state, agent_name) if (state and agent_name) else None
+    llm = get_model(model_name, model_provider, api_keys, thinking_budget=thinking_budget)
 
     # For non-JSON support models, we can use structured output
     if not (model_info and not model_info.has_json_mode()):
@@ -368,20 +369,47 @@ def get_agent_model_config(state, agent_name):
     Always returns valid model_name and model_provider values.
     """
     request = state.get("metadata", {}).get("request")
-    
+
     if request and hasattr(request, 'get_agent_model_config'):
         # Get agent-specific model configuration
         model_name, model_provider = request.get_agent_model_config(agent_name)
         # Ensure we have valid values
         if model_name and model_provider:
             return model_name, model_provider.value if hasattr(model_provider, 'value') else str(model_provider)
-    
+
     # Fall back to global configuration (system defaults)
     model_name = state.get("metadata", {}).get("model_name") or "gpt-4.1"
     model_provider = state.get("metadata", {}).get("model_provider") or "OPENAI"
-    
+
     # Convert enum to string if necessary
     if hasattr(model_provider, 'value'):
         model_provider = model_provider.value
-    
+
     return model_name, model_provider
+
+
+def get_agent_thinking_budget(state, agent_name: str) -> str | None:
+    """Resolve the per-agent Gemini thinking-budget level from the request.
+
+    Returns one of ``"off"``/``"low"``/``"medium"``/``"high"``/``"dynamic"``
+    when configured on this agent, else None (caller skips the param and
+    Google's default applies). Looks up by the agent's *full* node id
+    first; the wiring layer keys per-node, so each Forecaster /
+    Buffett / etc. instance can have its own budget.
+    """
+    try:
+        request = state.get("metadata", {}).get("request")
+        if request is None:
+            return None
+        budgets = getattr(request, "agent_thinking_budgets", None) or {}
+        if not isinstance(budgets, dict) or not budgets:
+            return None
+        # The agent_name passed in is the unique node id
+        # (e.g. "warren_buffett_abc123"). Match exact first; fall back to
+        # the base key in case a caller stripped the suffix.
+        if agent_name in budgets:
+            return budgets[agent_name]
+        base = agent_name.rsplit("_", 1)[0] if "_" in agent_name else agent_name
+        return budgets.get(base)
+    except Exception:
+        return None
