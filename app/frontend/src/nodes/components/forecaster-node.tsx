@@ -12,7 +12,7 @@
 // per-ticker messages stored in node-context — no SSE schema change.
 
 import { type NodeProps } from '@xyflow/react';
-import { LineChart, Maximize2 } from 'lucide-react';
+import { LineChart, Loader2, Maximize2, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { CardContent } from '@/components/ui/card';
@@ -22,6 +22,7 @@ import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
 import { useNodeState } from '@/hooks/use-node-state';
 import { cn } from '@/lib/utils';
+import { refreshForecaster } from '@/services/forecaster-api';
 import { getFlowMemory } from '@/services/memory-api';
 import { type AgentNode } from '../types';
 import { getStatusColor } from '../utils';
@@ -124,7 +125,7 @@ export function ForecasterNode({
   isConnectable,
 }: NodeProps<AgentNode>) {
   const { currentFlowId } = useFlowContext();
-  const { getAgentNodeDataForFlow } = useNodeContext();
+  const { getAgentNodeDataForFlow, updateAgentNode } = useNodeContext();
 
   const agentNodeData = getAgentNodeDataForFlow(currentFlowId?.toString() || null);
   const nodeData = agentNodeData[id] || {
@@ -219,6 +220,50 @@ export function ForecasterNode({
   }, [tickers, activeTicker]);
 
   const activeForecast = activeTicker ? forecastsByTicker[activeTicker] : null;
+
+  // Stand-alone refresh: POST /forecaster/refresh with the tickers we
+  // already have data for and the current Chronos-2 settings, then
+  // dispatch synthetic Done messages so the chart updates immediately
+  // (same channel SSE-driven runs use). Cheap path: no LLM, no other
+  // analysts, no PM. Disabled while in-flight or when there are no
+  // tickers to refresh (i.e., the node has never had a prior run).
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const flowIdStr = currentFlowId?.toString() || null;
+  const handleRefresh = async () => {
+    if (isRefreshing || tickers.length === 0) return;
+    setIsRefreshing(true);
+    try {
+      const flowIdNumLocal = currentFlowId != null ? Number(currentFlowId) : undefined;
+      const resp = await refreshForecaster({
+        tickers,
+        flow_id: flowIdNumLocal,
+        forecaster_context_len: contextLen,
+        forecaster_prediction_len: predictionLen,
+        forecaster_bar_frequency: barFrequency,
+      });
+      // Mirror each ticker's reasoning into a synthetic Done message,
+      // same shape NodeContext rehydration uses post-reload. The
+      // existing runtimeForecasts useMemo picks the fence out and the
+      // chart re-renders. ISO timestamp keeps de-duplication honest
+      // across rapid clicks (Date.now is per-call distinct).
+      const now = new Date().toISOString();
+      for (const [t, sig] of Object.entries(resp.signals || {})) {
+        if (!sig?.reasoning) continue;
+        updateAgentNode(flowIdStr, id, {
+          timestamp: `${now}#${t}`,
+          message: 'Done',
+          ticker: t,
+          analysis: sig.reasoning,
+        });
+      }
+      // Mark the node COMPLETE so its status pill reflects the refresh.
+      updateAgentNode(flowIdStr, id, 'COMPLETE');
+    } catch (e) {
+      console.error('Forecaster refresh failed:', e);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   return (
     <NodeShell
@@ -332,12 +377,44 @@ export function ForecasterNode({
 
             <div className="text-subtitle text-primary flex items-center justify-between gap-1 mt-1">
               <span>Forecast</span>
-              <span
-                className="text-[10px] uppercase tracking-wide text-muted-foreground"
-                title="Amazon Chronos-2 — 120M-param probabilistic time-series foundation model. Runs locally on cached weights; no API key required."
-              >
-                Chronos-2
-              </span>
+              <div className="flex items-center gap-2">
+                {/* Refresh-this-node-only. Disabled while in-flight or
+                    before the first run (tickers come from prior data). */}
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={handleRefresh}
+                        disabled={isRefreshing || tickers.length === 0}
+                        className={cn(
+                          'flex items-center justify-center h-5 w-5 rounded border border-border text-muted-foreground transition-colors',
+                          'hover:text-foreground hover:border-primary/40',
+                          'disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground disabled:hover:border-border',
+                        )}
+                        aria-label="Refresh forecast"
+                      >
+                        {isRefreshing ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-3 w-3" />
+                        )}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-[240px] text-xs">
+                      {tickers.length === 0
+                        ? 'Run the flow once to set the tickers, then refresh updates only this node.'
+                        : `Refresh forecast for ${tickers.length} ticker${tickers.length === 1 ? '' : 's'} — runs Chronos-2 only, no other agents.`}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <span
+                  className="text-[10px] uppercase tracking-wide text-muted-foreground"
+                  title="Amazon Chronos-2 — 120M-param probabilistic time-series foundation model. Runs locally on cached weights; no API key required."
+                >
+                  Chronos-2
+                </span>
+              </div>
             </div>
             {activeForecast ? (
               <>
@@ -403,6 +480,10 @@ export function ForecasterNode({
             setContextLen,
             predictionLen,
             setPredictionLen,
+            onRefresh: handleRefresh,
+            isRefreshing,
+            canRefresh: tickers.length > 0,
+            tickerCount: tickers.length,
           }}
         />
       </CardContent>
@@ -504,6 +585,12 @@ interface ChronosControls {
   setContextLen: (v: number) => void;
   predictionLen: number;
   setPredictionLen: (v: number) => void;
+  // Refresh-this-node-only. Same handler the node body uses, surfaced
+  // in the dialog so the user doesn't have to close+reopen to refresh.
+  onRefresh: () => void;
+  isRefreshing: boolean;
+  canRefresh: boolean;  // false when there are no tickers yet
+  tickerCount: number;  // for the tooltip
 }
 
 interface DetailDialogProps {
@@ -550,12 +637,47 @@ const clampCtxValue = (n: number) => Math.max(CTX_MIN, Math.min(CTX_MAX, Math.ro
 const clampPredValue = (n: number) => Math.max(PRED_MIN, Math.min(PRED_MAX, Math.round(n) || PRED_DEFAULT));
 
 function DialogChronosSettings({ controls }: { controls: ChronosControls }) {
-  const { barFrequency, setBarFrequency, contextLen, setContextLen, predictionLen, setPredictionLen } = controls;
+  const {
+    barFrequency, setBarFrequency,
+    contextLen, setContextLen,
+    predictionLen, setPredictionLen,
+    onRefresh, isRefreshing, canRefresh, tickerCount,
+  } = controls;
   const activeFreq = FREQ_OPTIONS.find((o) => o.value === barFrequency) ?? FREQ_OPTIONS[0];
   return (
     <TooltipProvider>
       <div className="rounded border border-border bg-node/40 p-3">
-        <div className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Chronos-2 Settings</div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">Chronos-2 Settings</div>
+          {/* Refresh-this-node-only — same handler the node body uses. */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onRefresh}
+                disabled={isRefreshing || !canRefresh}
+                className={cn(
+                  'flex items-center gap-2 px-3 py-1 rounded border border-border text-sm transition-colors',
+                  'hover:border-primary/40 hover:text-foreground',
+                  'disabled:opacity-40 disabled:cursor-not-allowed',
+                )}
+                aria-label="Refresh forecast"
+              >
+                {isRefreshing ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                <span>{isRefreshing ? 'Refreshing…' : 'Refresh forecast'}</span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-[320px] text-xs">
+              {!canRefresh
+                ? 'Run the flow once to set the tickers, then refresh updates only this node.'
+                : `Re-runs Chronos-2 only on the current ${tickerCount} ticker${tickerCount === 1 ? '' : 's'} — no other agents, no PM. Updates the chart in place.`}
+            </TooltipContent>
+          </Tooltip>
+        </div>
         <div className="grid grid-cols-3 gap-3">
           <Tooltip>
             <TooltipTrigger asChild>

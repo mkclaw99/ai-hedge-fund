@@ -184,6 +184,22 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     # '1min' (intraday via yfinance). Context/prediction lengths apply as
     # *bar counts* at the chosen frequency, not always trading days.
     forecaster_bar_frequency: Optional[str] = None
+
+
+class ForecasterRefreshRequest(BaseModel):
+    """POST body for ``/forecaster/refresh`` — re-run the Time Series
+    Forecaster *only*, without touching other analysts or the PM."""
+    tickers: List[str]
+    flow_id: Optional[int] = None
+    end_date: Optional[str] = None  # ISO; defaults to today
+    # Same per-flow knobs the full-run request carries — the forecaster
+    # agent reads them via state["metadata"]["request"].
+    forecaster_context_len: Optional[int] = None
+    forecaster_prediction_len: Optional[int] = None
+    forecaster_bar_frequency: Optional[str] = None
+    # Optional, only needed for the daily-frequency FD path. Intraday
+    # goes via yfinance which doesn't need keys.
+    api_keys: Optional[Dict[str, str]] = None
     # When True (and a Trading Account node is in the flow with Auto-trade on), the
     # PM's per-ticker decisions are submitted as market orders on the user's Alpaca
     # PAPER account. Default off — even paper orders are a real action.
