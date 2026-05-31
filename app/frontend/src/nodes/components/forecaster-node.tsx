@@ -39,6 +39,19 @@ const PRED_MIN = 1;
 const PRED_MAX = 1024;
 const PRED_DEFAULT = 10;
 
+// Bar-frequency options. The unit applies to both context and prediction
+// counts: 256 + 10 at 'hour' = 256 hours of context, 10-hour forecast.
+// Intraday goes through yfinance which has hard period caps per interval:
+// 1min ≤ 7 days, 5min ≤ 60 days, 1h ≤ 730 days — surfaced as tooltips
+// so the user knows when their context_len would be silently truncated.
+type BarFrequency = 'day' | 'hour' | '5min' | '1min';
+const FREQ_OPTIONS: { value: BarFrequency; label: string; hint: string }[] = [
+  { value: 'day', label: 'Daily', hint: 'One bar per trading day. Full history via the cached provider chain.' },
+  { value: 'hour', label: 'Hourly', hint: 'One bar per trading hour (~7/day). Max ~730 days of history via yfinance.' },
+  { value: '5min', label: '5-Minute', hint: 'One bar every 5 minutes (~78/day). Max 60 days of history via yfinance.' },
+  { value: '1min', label: '1-Minute', hint: 'One bar per minute (~390/day). Max 7 days of history via yfinance.' },
+];
+
 // --- Types and parsing ----------------------------------------------------
 
 interface ForecastPayload {
@@ -49,7 +62,8 @@ interface ForecastPayload {
   q75: number[];          // inner-band upper (50% PI)
   q90: number[];          // outer-band upper (80% PI)
   confidence: number[];   // 0-100 per step (fan-width-derived; see backend)
-  horizon_days: number;
+  horizon_days: number;   // count of bars in the forecast (name stays for back-compat)
+  frequency?: 'day' | 'hour' | '5min' | '1min'; // unit of each bar; undef → daily
 }
 
 const FENCE_RE = /```forecast-data\s*\n([\s\S]*?)\n```/;
@@ -73,6 +87,7 @@ function extractForecast(md?: string | null): ForecastPayload | null {
       q90: obj.q90,
       confidence: Array.isArray(obj.confidence) ? obj.confidence : obj.q50.map(() => 50),
       horizon_days: obj.horizon_days ?? obj.q50.length,
+      frequency: obj.frequency,
     };
   } catch {
     return null;
@@ -131,8 +146,10 @@ export function ForecasterNode({
   // restore path.
   const [contextLen, setContextLen] = useNodeState<number>(id, 'forecasterContextLen', CTX_DEFAULT);
   const [predictionLen, setPredictionLen] = useNodeState<number>(id, 'forecasterPredictionLen', PRED_DEFAULT);
+  const [barFrequency, setBarFrequency] = useNodeState<BarFrequency>(id, 'forecasterBarFrequency', 'day');
   const clampCtx = (n: number) => Math.max(CTX_MIN, Math.min(CTX_MAX, Math.round(n) || CTX_DEFAULT));
   const clampPred = (n: number) => Math.max(PRED_MIN, Math.min(PRED_MAX, Math.round(n) || PRED_DEFAULT));
+  const activeFreq = FREQ_OPTIONS.find((o) => o.value === barFrequency) ?? FREQ_OPTIONS[0];
 
   // Live runtime forecasts: {ticker → latest forecast}, newest-first scan
   // of the SSE message history that NodeContext accumulates during a run.
@@ -231,18 +248,41 @@ export function ForecasterNode({
               </div>
             )}
 
-            {/* Chronos-2 length controls — two number inputs sized for
-                this Chronos's published limits. Labels visible, tooltips
-                explain the trade-offs (more context = slower forward
-                pass, more prediction = wider fan / lower confidence). */}
+            {/* Chronos-2 settings — bar frequency picker + context/prediction
+                lengths. Length units adapt to the frequency: 256 + 10 at
+                'Hourly' = 256 hours of context, 10-hour forecast. The
+                Daily path runs through the cached provider chain; intraday
+                hits yfinance directly with hard period caps per interval
+                (1m≤7d, 5m≤60d, 1h≤730d). */}
             <TooltipProvider>
               <div className="text-subtitle text-primary flex items-center gap-1 mt-1">Chronos-2 Settings</div>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Bar frequency
+                    </label>
+                    <select
+                      value={barFrequency}
+                      onChange={(e) => setBarFrequency(e.target.value as BarFrequency)}
+                      className="w-full rounded border border-border bg-node/60 px-2 py-1 text-sm text-foreground focus:outline-none focus:border-primary/50"
+                    >
+                      {FREQ_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-[280px] text-xs">
+                  {activeFreq.hint}
+                </TooltipContent>
+              </Tooltip>
               <div className="grid grid-cols-2 gap-2">
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <div className="flex flex-col gap-0.5">
                       <label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                        Context days
+                        Context bars
                       </label>
                       <input
                         type="number"
@@ -257,15 +297,17 @@ export function ForecasterNode({
                     </div>
                   </TooltipTrigger>
                   <TooltipContent side="top" className="max-w-[260px] text-xs">
-                    Past daily closes Chronos-2 reads as context. Range {CTX_MIN}–{CTX_MAX}.
-                    More context generally improves the forecast but costs a slower forward pass.
+                    Past bars Chronos-2 reads as context. Range {CTX_MIN}–{CTX_MAX}.
+                    More context generally improves the forecast but costs a slower
+                    forward pass. Intraday frequencies clip to available history
+                    (1m≤7d, 5m≤60d, 1h≤730d).
                   </TooltipContent>
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <div className="flex flex-col gap-0.5">
                       <label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                        Prediction days
+                        Prediction bars
                       </label>
                       <input
                         type="number"
@@ -280,9 +322,9 @@ export function ForecasterNode({
                     </div>
                   </TooltipTrigger>
                   <TooltipContent side="top" className="max-w-[260px] text-xs">
-                    Trading days to forecast forward. Range {PRED_MIN}–{PRED_MAX}.
-                    Longer horizons produce wider fans (lower confidence) — Chronos is most
-                    accurate at the short end.
+                    Bars to forecast forward. Range {PRED_MIN}–{PRED_MAX}.
+                    Longer horizons produce wider fans (lower confidence) — Chronos
+                    is most accurate at the short end.
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -674,11 +716,20 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
   const histIdx = isHistHover ? hoverIdx : null;
   const fcIdx = !isHistHover && hoverIdx != null ? hoverIdx - histN : null;
 
+  // Time-axis label suffix adapts to bar frequency so 't+10' reads as
+  // 10 days at 'day', 10 hours at 'hour', 10×5min at '5min', and so on.
+  // Falls back to 't+N' on missing frequency (older payloads).
+  const freqSuffix =
+    forecast.frequency === 'hour' ? 'h'
+    : forecast.frequency === '5min' ? '×5m'
+    : forecast.frequency === '1min' ? 'm'
+    : forecast.frequency === 'day' ? 'd'
+    : '';
   const dayLabel = (i: number) => {
-    const fromToday = i - (histN - 1);
-    if (fromToday === 0) return 'today';
-    if (fromToday < 0) return `t${fromToday}`;
-    return `t+${fromToday}`;
+    const from = i - (histN - 1);
+    if (from === 0) return 'now';
+    const sign = from < 0 ? '' : '+';
+    return `${sign}${from}${freqSuffix}`;
   };
 
   return (

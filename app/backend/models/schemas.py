@@ -180,6 +180,10 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     # in the agent itself, so a bad input never crashes the run.
     forecaster_context_len: Optional[int] = None
     forecaster_prediction_len: Optional[int] = None
+    # Bar frequency: 'day' (default, via provider chain) | 'hour' | '5min' |
+    # '1min' (intraday via yfinance). Context/prediction lengths apply as
+    # *bar counts* at the chosen frequency, not always trading days.
+    forecaster_bar_frequency: Optional[str] = None
     # When True (and a Trading Account node is in the flow with Auto-trade on), the
     # PM's per-ticker decisions are submitted as market orders on the user's Alpaca
     # PAPER account. Default off — even paper orders are a real action.

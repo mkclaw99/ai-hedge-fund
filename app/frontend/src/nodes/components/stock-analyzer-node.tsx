@@ -211,6 +211,7 @@ export function StockAnalyzerNode({
     const forecasterState = (forecasterNode ? getNodeInternalState(forecasterNode.id) : null) as any;
     const forecasterContextLen = forecasterState?.forecasterContextLen != null ? Number(forecasterState.forecasterContextLen) : undefined;
     const forecasterPredictionLen = forecasterState?.forecasterPredictionLen != null ? Number(forecasterState.forecasterPredictionLen) : undefined;
+    const forecasterBarFrequency = forecasterState?.forecasterBarFrequency || undefined;
 
     // Check if we're in backtest mode
     if (runMode === 'backtest') {
@@ -236,6 +237,7 @@ export function StockAnalyzerNode({
         starting_budget: startingBudget,
         forecaster_context_len: forecasterContextLen,
         forecaster_prediction_len: forecasterPredictionLen,
+        forecaster_bar_frequency: forecasterBarFrequency,
       });
     } else {
       // Use the regular hedge fund API for single run
@@ -257,6 +259,7 @@ export function StockAnalyzerNode({
         starting_budget: startingBudget,
         forecaster_context_len: forecasterContextLen,
         forecaster_prediction_len: forecasterPredictionLen,
+        forecaster_bar_frequency: forecasterBarFrequency,
         start_date: startDate,
         end_date: endDate,
       });

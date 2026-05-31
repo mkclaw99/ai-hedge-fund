@@ -230,6 +230,7 @@ export function PortfolioStartNode({
     const forecasterState = (forecasterNode ? getNodeInternalState(forecasterNode.id) : null) as any;
     const forecasterContextLen = forecasterState?.forecasterContextLen != null ? Number(forecasterState.forecasterContextLen) : undefined;
     const forecasterPredictionLen = forecasterState?.forecasterPredictionLen != null ? Number(forecasterState.forecasterPredictionLen) : undefined;
+    const forecasterBarFrequency = forecasterState?.forecasterBarFrequency || undefined;
 
     // Check if we're in backtest mode
     if (runMode === 'backtest') {
@@ -255,6 +256,7 @@ export function PortfolioStartNode({
         starting_budget: startingBudget,
         forecaster_context_len: forecasterContextLen,
         forecaster_prediction_len: forecasterPredictionLen,
+        forecaster_bar_frequency: forecasterBarFrequency,
         // Pass portfolio positions to backend
         portfolio_positions: portfolioPositions,
       });
@@ -278,6 +280,7 @@ export function PortfolioStartNode({
         starting_budget: startingBudget,
         forecaster_context_len: forecasterContextLen,
         forecaster_prediction_len: forecasterPredictionLen,
+        forecaster_bar_frequency: forecasterBarFrequency,
         start_date: threeMonthsAgo.toISOString().split('T')[0],
         end_date: today.toISOString().split('T')[0],
         initial_cash: parseFloat(initialCash) || 100000,

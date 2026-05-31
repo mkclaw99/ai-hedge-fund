@@ -45,6 +45,19 @@ _PRED_LEN = 10                  # trading-day horizon (~2 weeks)
 _QUANTILES = [0.1, 0.25, 0.5, 0.75, 0.9]
 _NEUTRAL_PCT = 1.0              # |q50_pct| below this → neutral
 
+# Bar-frequency knob. Daily goes through the standard provider chain
+# (FD → Alpaca → Yahoo, cached). Intraday bypasses the chain and pulls
+# from yfinance directly — it's the only free source with reliable
+# intraday history; Alpaca-tier limits make it unreliable for free
+# accounts. yfinance period caps per interval are hard ceilings: 1m=7d,
+# 5m=60d, 1h=730d. Asking for more than that on intraday is silently
+# truncated to whatever fits.
+_VALID_FREQUENCIES = ("day", "hour", "5min", "1min")
+_YFI_INTERVAL = {"hour": "1h", "5min": "5m", "1min": "1m"}
+_YFI_PERIOD = {"1m": "7d", "5m": "60d", "1h": "730d"}
+# Friendly singular-unit label used in the report/UI.
+_FREQ_UNIT = {"day": "trading day", "hour": "hour", "5min": "5-min bar", "1min": "minute"}
+
 _pipeline = None
 _pipeline_lock = Lock()
 
@@ -112,6 +125,71 @@ def _resolve_lengths(state: AgentState) -> tuple[int, int]:
     return ctx, pred
 
 
+def _resolve_frequency(state: AgentState) -> str:
+    """Read per-flow bar frequency from the request. Default: 'day'."""
+    try:
+        req = state.get("metadata", {}).get("request")
+        if req is not None:
+            f = getattr(req, "forecaster_bar_frequency", None)
+            if f and str(f).lower() in _VALID_FREQUENCIES:
+                return str(f).lower()
+    except Exception:
+        pass
+    return "day"
+
+
+def _fetch_bars(ticker: str, end_date: str, frequency: str, count: int, api_key: str | None) -> np.ndarray:
+    """Return up to *count* close-price bars for *ticker* at the given frequency.
+
+    Daily goes through the existing provider chain (FD → Alpaca → Yahoo)
+    so the SQLite cache and the fallbacks all work. Intraday bypasses the
+    chain and pulls from yfinance directly because the chain is daily-only
+    today and Alpaca's free-tier intraday is unreliable. Returns an empty
+    array on any failure — the caller treats that as "skip this ticker".
+    """
+    if frequency == "day":
+        # Pull ~count trading days. Overshoot by 1.6× on calendar days to
+        # cover weekends/holidays; tail back to count below.
+        try:
+            start = (datetime.fromisoformat(end_date) - timedelta(days=int(count * 1.6))).date().isoformat()
+        except Exception:
+            start = end_date
+        prices = get_prices(ticker=ticker, start_date=start, end_date=end_date, api_key=api_key)
+        if not prices:
+            return np.array([], dtype=np.float32)
+        df = prices_to_df(prices)
+        if df.empty or "close" not in df.columns:
+            return np.array([], dtype=np.float32)
+        return pd.to_numeric(df["close"], errors="coerce").dropna().tail(count).to_numpy(dtype=np.float32)
+
+    # --- Intraday via yfinance ---------------------------------------------
+    interval = _YFI_INTERVAL.get(frequency)
+    if interval is None:
+        return np.array([], dtype=np.float32)
+    try:
+        import yfinance as yf  # lazy import — already a dep but keep startup cheap
+        period = _YFI_PERIOD[interval]
+        df = yf.download(
+            tickers=ticker,
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=True,
+            threads=False,  # avoid multi-ticker MultiIndex columns
+        )
+        if df is None or df.empty:
+            return np.array([], dtype=np.float32)
+        # yfinance may return MultiIndex columns (when threads=True or multi
+        # tickers); squeeze handles both cases.
+        close = df["Close"]
+        if hasattr(close, "columns"):  # DataFrame, not Series
+            close = close.iloc[:, 0]
+        return pd.to_numeric(close, errors="coerce").dropna().tail(count).to_numpy(dtype=np.float32)
+    except Exception as e:
+        logger.warning("intraday fetch (%s) failed for %s: %s", frequency, ticker, e)
+        return np.array([], dtype=np.float32)
+
+
 def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
     """Run Chronos-2 on each ticker and emit a directional signal."""
     data = state["data"]
@@ -119,30 +197,20 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
     end_date = data["end_date"]
     api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
     context_len, prediction_len = _resolve_lengths(state)
+    frequency = _resolve_frequency(state)
 
     # Collect price history per ticker first. Fast, and lets us bail out
     # cleanly if the model is unavailable without paying the load cost.
     series_by_ticker: dict[str, np.ndarray] = {}
     for ticker in tickers:
-        progress.update_status(agent_id, ticker, "Fetching price history")
-        # Pull ~context_len trading days. Overshoot by 1.6× on calendar days
-        # to cover weekends/holidays; we trim back to context_len below.
-        try:
-            start = (datetime.fromisoformat(end_date) - timedelta(days=int(context_len * 1.6))).date().isoformat()
-        except Exception:
-            start = end_date
-        prices = get_prices(ticker=ticker, start_date=start, end_date=end_date, api_key=api_key)
-        if not prices:
-            progress.update_status(agent_id, ticker, "Failed: no price history")
+        progress.update_status(agent_id, ticker, f"Fetching {frequency} bars")
+        closes = _fetch_bars(ticker, end_date, frequency, context_len, api_key)
+        if closes.size == 0:
+            progress.update_status(agent_id, ticker, "Failed: no bars available")
             continue
-        df = prices_to_df(prices)
-        if df.empty or "close" not in df.columns:
-            progress.update_status(agent_id, ticker, "Failed: empty price frame")
-            continue
-        closes = pd.to_numeric(df["close"], errors="coerce").dropna().tail(context_len).to_numpy(dtype=np.float32)
         if closes.size < 30:
             # Chronos can technically handle short context, but a forecast
-            # off ~one month of history is noise. Drop it.
+            # off ~30 bars is noise — applies at any frequency.
             progress.update_status(agent_id, ticker, "Failed: insufficient history")
             continue
         series_by_ticker[ticker] = closes
@@ -206,7 +274,7 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
         # Signal mapping uses the final step's outer quantiles only — q25/q75
         # widen the inner band on the chart but don't change the directional
         # signal the PM sees, so track-record stays consistent across versions.
-        signals[ticker] = _build_signal(last_close, q10_traj[-1], q50_traj[-1], q90_traj[-1], horizon_days=prediction_len)
+        signals[ticker] = _build_signal(last_close, q10_traj[-1], q50_traj[-1], q90_traj[-1], horizon_days=prediction_len, frequency=frequency)
         # Per-step confidence — precision of the predictive distribution at
         # each step, derived from the 80% prediction interval's width
         # as a fraction of the last close. Narrow band = confident,
@@ -230,6 +298,10 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
             "q90": [round(x, 4) for x in q90_traj],
             "confidence": confidence_traj,
             "horizon_days": prediction_len,
+            # Frequency travels alongside horizon_days so the chart can
+            # label the time axis correctly (10 'bars' means 10 days at
+            # 'day', 10 hours at 'hour', 10 minutes at '1min', etc.).
+            "frequency": frequency,
         })
         # Hand-rolled report — no LLM call. The forecaster's whole point is
         # Chronos-2; routing the structured reasoning dict through an LLM
@@ -259,7 +331,15 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
     return {"messages": state["messages"] + [message], "data": data}
 
 
-def _build_signal(last: float, q10: float, q50: float, q90: float, *, horizon_days: int = _PRED_LEN) -> dict:
+def _build_signal(
+    last: float,
+    q10: float,
+    q50: float,
+    q90: float,
+    *,
+    horizon_days: int = _PRED_LEN,
+    frequency: str = "day",
+) -> dict:
     """Map a forecast fan to a ``{signal, confidence, reasoning}`` dict.
 
     Direction rule (cheapest first):
@@ -316,6 +396,7 @@ def _build_signal(last: float, q10: float, q50: float, q90: float, *, horizon_da
         "reasoning": {
             "model": _MODEL_ID,
             "horizon_days": horizon_days,
+            "frequency": frequency,
             "last_close": round(last, 4),
             "forecast_end": {
                 "q10": round(q10, 4),
@@ -373,6 +454,9 @@ def _render_report(sig: dict) -> str:
     pct = r.get("pct_change", {}) or {}
     last = r.get("last_close")
     horizon = r.get("horizon_days", _PRED_LEN)
+    freq = r.get("frequency", "day")
+    unit = _FREQ_UNIT.get(freq, "step")
+    unit_plural = unit + ("" if unit.endswith("s") else "s")
     signal = str(sig.get("signal", "neutral")).upper()
     confidence = int(sig.get("confidence", 0))
 
@@ -391,9 +475,10 @@ def _render_report(sig: dict) -> str:
 
     return (
         f"**Signal:** {signal} · **Confidence:** {confidence}% · "
-        f"**Horizon:** {horizon} trading days\n\n"
+        f"**Horizon:** {horizon} {unit_plural}\n\n"
         f"**Model:** Amazon Chronos-2 — 120M-param probabilistic time-series "
-        f"foundation model, run locally on the cached weights.\n\n"
+        f"foundation model, run locally on the cached weights. "
+        f"**Bar frequency:** {freq}.\n\n"
         f"**At horizon end** vs last close ({_px(last)}):\n"
         f"- Lower bound (q10): {_pct(pct.get('q10'))} ({_px(fc.get('q10'))})\n"
         f"- Median (q50): {_pct(pct.get('q50'))} ({_px(fc.get('q50'))})\n"
