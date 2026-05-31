@@ -45,6 +45,11 @@ python-multipart = "^0.0.29"
 # items, insider, news, market cap) via Yahoo Finance with explicit
 # field-mapping; see src/tools/providers/yfinance_provider.py.
 yfinance = "^0.2.40"
+# Time-series foundation model for the Forecaster analyst. Chronos-2 is
+# Amazon's 120M-param encoder-only model (T5-style), zero-shot probabilistic
+# price forecasting. Pulls torch transitively; CPU inference works (slow but
+# usable on a Mac); auto-uses MPS/CUDA when available via device_map="auto".
+chronos-forecasting = ">=2.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
