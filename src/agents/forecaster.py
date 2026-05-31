@@ -65,7 +65,9 @@ _pipeline_lock = Lock()
 # Kept short on purpose — the chart panel is ~180 px wide and 30 trading
 # days is plenty to read direction off the most recent close. We have the
 # full ~256-step input regardless; this is just what we send to the UI.
-_CHART_HISTORY = 30
+_CHART_HISTORY_MIN = 30        # never less than this (sane daily default)
+_CHART_HISTORY_RATIO = 5       # show ~5× the forecast horizon as context
+_CHART_HISTORY_HARD_MAX = 1024  # cap so a 17-hr 1-min forecast doesn't ship 32k bars
 # Fence marker the frontend's ForecasterNode parses out of the per-ticker
 # analysis Markdown. Bracketed so a Markdown viewer still renders the
 # block as a labelled code fence if a human opens the raw analysis.
@@ -288,7 +290,18 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
         # the existing SSE 'analysis' channel carries it through without a
         # schema change. ForecasterNode parses the fence; other components
         # see it as a labelled code block and ignore it.
-        history = [float(x) for x in series_by_ticker[ticker][-_CHART_HISTORY:].tolist()]
+        # Scale chart history to the forecast horizon so the UI ratio
+        # stays readable: at daily/pred=10 we ship ~50 bars (~10 weeks),
+        # at 1-min/pred=1024 we ship ~1024 bars (matching the forecast
+        # width — fan and history occupy equal visual space). Capped
+        # at the actual context the model saw, and at a hard ceiling so
+        # the payload stays bounded.
+        chart_history_n = min(
+            len(series_by_ticker[ticker]),
+            max(_CHART_HISTORY_MIN, _CHART_HISTORY_RATIO * prediction_len),
+            _CHART_HISTORY_HARD_MAX,
+        )
+        history = [float(x) for x in series_by_ticker[ticker][-chart_history_n:].tolist()]
         chart = json.dumps({
             "history": [round(x, 4) for x in history],
             "q10": [round(x, 4) for x in q10_traj],
