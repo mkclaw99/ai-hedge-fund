@@ -62,6 +62,7 @@ export interface HedgeFundRequest extends BaseHedgeFundRequest {
   starting_budget?: number;     // Trading Account node's Starting Budget (drives budget-aware sizing)
   forecaster_context_len?: number;     // Chronos-2 context window (32-8192). undef → backend default 256
   forecaster_prediction_len?: number;  // Chronos-2 forecast horizon (1-1024). undef → backend default 10
+  forecaster_bar_frequency?: 'day' | 'hour' | '5min' | '1min'; // bar resolution; intraday via yfinance
   strategy?: StrategyConfig;    // Strategy node config — style, sizing, caps, instruments, mandate
   skip_analysts?: boolean;      // Replay strategy on cached signals (no analyst re-run, no theme resolve)
   risk_manager?: RiskManagerConfig; // Risk Manager node — vol/correlation cap overrides
@@ -102,6 +103,7 @@ export interface BacktestRequest extends BaseHedgeFundRequest {
   starting_budget?: number;
   forecaster_context_len?: number;
   forecaster_prediction_len?: number;
+  forecaster_bar_frequency?: 'day' | 'hour' | '5min' | '1min';
 }
 
 export interface BacktestDayResult {
