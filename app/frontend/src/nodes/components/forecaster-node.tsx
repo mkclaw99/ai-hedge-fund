@@ -507,13 +507,25 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const svg = svgRef.current;
     if (!svg) return;
-    const rect = svg.getBoundingClientRect();
-    const xPx = ((e.clientX - rect.left) / rect.width) * W;
-    if (xPx < padL || xPx > W - padR) {
+    // Map client coords → viewBox coords via SVG's own CTM. Doing the
+    // ratio with getBoundingClientRect ignores preserveAspectRatio
+    // letterboxing: when the container's aspect doesn't match the
+    // viewBox, the chart is rendered inside a smaller letterboxed
+    // sub-rectangle, but rect.width still spans the whole SVG element —
+    // the rect-based math therefore offsets the cursor by exactly the
+    // letterbox margin. getScreenCTM().inverse() accounts for the
+    // preserveAspectRatio transform and gives the true viewBox X.
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX;
+    pt.y = e.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return;
+    const local = pt.matrixTransform(ctm.inverse());
+    if (local.x < padL || local.x > W - padR) {
       setHoverIdx(null);
       return;
     }
-    const frac = (xPx - padL) / innerW;
+    const frac = (local.x - padL) / innerW;
     const idx = Math.round(frac * (total - 1));
     setHoverIdx(Math.max(0, Math.min(total - 1, idx)));
   };
@@ -627,15 +639,23 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
         )}
       </svg>
 
-      {/* Hover tooltip — rendered as HTML rather than SVG text for crisp typography. */}
-      {hoverIdx != null && (
-        <HoverTooltip
-          forecast={forecast}
-          hoverIdx={hoverIdx}
-          histN={histN}
-          dayLabel={dayLabel(hoverIdx)}
-        />
-      )}
+      {/* Hover tooltip — rendered as HTML rather than SVG text for
+          crisp typography. The strip has a *reserved* height even when
+          empty so the SVG above doesn't reflow on hover-on/off (which
+          previously caused the chart to visibly re-rasterise — i.e.
+          the "jiggle"). nowrap + overflow-hidden cap a wide line so a
+          long tooltip can't push the strip taller and re-trigger the
+          reflow we're trying to avoid. */}
+      <div className="h-6 mt-2 flex items-center text-[11px] tabular-nums overflow-hidden whitespace-nowrap">
+        {hoverIdx != null && (
+          <HoverTooltip
+            forecast={forecast}
+            hoverIdx={hoverIdx}
+            histN={histN}
+            dayLabel={dayLabel(hoverIdx)}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -657,7 +677,7 @@ function HoverTooltip({
     const price = forecast.history[hoverIdx];
     const delta = ((price - last) / last) * 100;
     return (
-      <div className="mt-2 flex items-center gap-3 text-[11px] tabular-nums">
+      <div className="flex items-center gap-3">
         <span className="text-muted-foreground">{dayLabel}</span>
         <span><span className="text-muted-foreground">price</span> ${price.toFixed(2)}</span>
         <span className={delta >= 0 ? 'text-emerald-500' : 'text-red-500'}>
@@ -675,7 +695,7 @@ function HoverTooltip({
   const conf = forecast.confidence[fcIdx] ?? 0;
   const pct = (v: number) => `${v - last >= 0 ? '+' : ''}${(((v - last) / last) * 100).toFixed(2)}%`;
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] tabular-nums">
+    <div className="flex items-center gap-3">
       <span className="text-muted-foreground">{dayLabel}</span>
       <span><span className="text-muted-foreground">q10</span> ${q10.toFixed(2)} <span className="text-red-500/80">({pct(q10)})</span></span>
       <span><span className="text-muted-foreground">q25</span> ${q25.toFixed(2)}</span>
