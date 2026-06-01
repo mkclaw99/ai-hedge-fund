@@ -76,10 +76,16 @@ interface NodeContextType {
   exportNodeContextData: (flowId: string | null) => {
     agentNodeData: Record<string, AgentNodeData>;
     outputNodeData: OutputNodeData | null;
+    // Per-node LLM selections, keyed by raw node id (flow prefix stripped).
+    // Restored on flow load so a refresh doesn't reset every model picker to
+    // "Auto". Lived only in React useState until this field was added —
+    // surviving across tabs but never across reloads.
+    agentModels: Record<string, LanguageModel | null>;
   };
   importNodeContextData: (flowId: string | null, data: {
     agentNodeData?: Record<string, AgentNodeData>;
     outputNodeData?: OutputNodeData | null;
+    agentModels?: Record<string, LanguageModel | null>;
   }) => void;
   // New flow-aware functions
   getAgentNodeDataForFlow: (flowId: string | null) => Record<string, AgentNodeData>;
@@ -352,20 +358,38 @@ export function NodeProvider({ children }: { children: ReactNode }) {
     });
 
     // Export output data for specified flow
-    const currentFlowOutputData = flowId 
+    const currentFlowOutputData = flowId
       ? outputNodeData[flowId] || null
       : outputNodeData['default'] || null;
+
+    // Export per-node LLM picks for this flow. Strip the `flowId:` prefix
+    // so the persisted shape is `{nodeId → model}` — matches how agentNodeData
+    // ships above, and lets importNodeContextData re-prefix with whatever
+    // flowId the loader passes.
+    const currentFlowAgentModels: Record<string, LanguageModel | null> = {};
+    Object.entries(agentModels).forEach(([compositeKey, model]) => {
+      if (flowId) {
+        if (compositeKey.startsWith(flowPrefix)) {
+          const nodeId = compositeKey.substring(flowPrefix.length);
+          currentFlowAgentModels[nodeId] = model;
+        }
+      } else if (!compositeKey.includes(':')) {
+        currentFlowAgentModels[compositeKey] = model;
+      }
+    });
 
     return {
       agentNodeData: currentFlowAgentData,
       outputNodeData: currentFlowOutputData,
+      agentModels: currentFlowAgentModels,
     };
-  }, [agentNodeData, outputNodeData]);
+  }, [agentNodeData, outputNodeData, agentModels]);
 
   // Import node context data from persistence
   const importNodeContextData = useCallback((flowId: string | null, data: {
     agentNodeData?: Record<string, AgentNodeData>;
     outputNodeData?: OutputNodeData | null;
+    agentModels?: Record<string, LanguageModel | null>;
   }) => {
     // Import agent data
     if (data.agentNodeData) {
@@ -391,6 +415,21 @@ export function NodeProvider({ children }: { children: ReactNode }) {
           'default': data.outputNodeData!,
         }));
       }
+    }
+
+    // Import per-node LLM picks. Re-prefix with the loader-supplied flowId
+    // (the persisted shape has the prefix stripped). Without this, every
+    // browser reload reset every node's model selector to "Auto" because
+    // agentModels only lived in React useState.
+    if (data.agentModels) {
+      setAgentModels(prev => {
+        const next = { ...prev };
+        Object.entries(data.agentModels!).forEach(([nodeId, model]) => {
+          const compositeKey = createCompositeKey(flowId, nodeId);
+          next[compositeKey] = model;
+        });
+        return next;
+      });
     }
   }, []);
 

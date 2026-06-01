@@ -15,7 +15,7 @@ import { useCallback } from 'react';
  */
 export function useEnhancedFlowActions() {
   const { saveCurrentFlow, loadFlow, reactFlowInstance, currentFlowId } = useFlowContext();
-  const { exportNodeContextData } = useNodeContext();
+  const { exportNodeContextData, importNodeContextData } = useNodeContext();
 
   // Enhanced save that includes node context data
   const saveCurrentFlowWithCompleteState = useCallback(async (name?: string, description?: string): Promise<Flow | null> => {
@@ -94,9 +94,14 @@ export function useEnhancedFlowActions() {
         });
       }
       
-      // NOTE: We intentionally do NOT restore nodeContextData here
-      // Runtime execution data (messages, analysis, agent status) should start fresh
-      // Only configuration data (tickers, model selections) is restored above
+      // Restore ONLY the configuration slice of nodeContextData — the per-node
+      // LLM picks (agentModels). Runtime execution data (agentNodeData,
+      // outputNodeData) intentionally stays fresh: a tab reload shouldn't make
+      // stale "Done"/"Error" badges come back as if a run had just finished.
+      const persistedCtx = (flow.data || {}).nodeContextData;
+      if (persistedCtx && persistedCtx.agentModels) {
+        importNodeContextData(flow.id.toString(), { agentModels: persistedCtx.agentModels });
+      }
 
       console.log('Flow loaded with complete state restoration:', flow.name);
     } catch (error) {
