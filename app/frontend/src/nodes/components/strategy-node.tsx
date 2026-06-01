@@ -1,6 +1,6 @@
 import { useReactFlow, type NodeProps } from '@xyflow/react';
-import { BarChart3, History, Loader2, Play, Square, Target, Trash2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { BarChart3, History, Loader2, Lock, Play, Sigma, Square, Target, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { CardContent } from '@/components/ui/card';
@@ -198,6 +198,34 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
   })();
   const mismatch = linkedForecaster ? horizonMismatch(holdingPeriod, linkedForecaster.freq) : null;
 
+  // Simons-driven detection. When a Jim Simons node has an edge into this
+  // Strategy node, it owns the StrategyConfig — the manual fields below
+  // are visibly inert ("Driven by Jim Simons" banner, lock icons), and
+  // buildStrategyConfig returns Simons's persisted recommendedStrategy
+  // instead of the typed-in values. Unplug Simons → manual values come
+  // straight back unchanged (they were never overwritten, just shadowed).
+  const simonsOverride = useMemo<{ nodeId: string; strategy: any; updatedAt: string | null } | null>(() => {
+    const edges = getEdges();
+    const nodes = getNodes();
+    const incomingSources = new Set(edges.filter(e => e.target === id).map(e => e.source));
+    for (const n of nodes) {
+      if (n.type !== 'jim-simons-node') continue;
+      if (!incomingSources.has(n.id)) continue;
+      const state = (getNodeInternalState(n.id) as any) || {};
+      const strat = state.recommendedStrategy;
+      if (!strat) continue;
+      return {
+        nodeId: n.id,
+        strategy: strat,
+        updatedAt: state.lastRefreshAt || null,
+      };
+    }
+    return null;
+  // Re-run on the state-bump version that already triggers the linkedForecaster
+  // refresh — same listener covers Simons useNodeState writes.
+  }, [getEdges, getNodes, id]);
+  const isDrivenBySimons = simonsOverride !== null;
+
   // Parse a numeric-ish string into a float; non-finite values collapse to
   // undefined so they don't override Pydantic defaults on the backend.
   const parseNum = (v: any): number | undefined => {
@@ -286,24 +314,34 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
   };
 
   // Build the StrategyConfig from the current node state — shared by Replay
-  // and Backtest. Avoids two slightly-divergent copies.
-  const buildStrategyConfig = () => ({
-    style: style || undefined,
-    sizing_rule: sizingRule || undefined,
-    max_position_pct: parseNum(maxPositionPct),
-    max_sector_pct: parseNum(maxSectorPct),
-    holding_period: holdingPeriod || undefined,
-    stop_loss_pct: parseNum(stopLossPct),
-    take_profit_pct: parseNum(takeProfitPct),
-    allow_stocks: allowStocks !== false,
-    allow_options: !!allowOptions,
-    allow_etfs: !!allowEtfs,
-    note: note || undefined,
-    // Decoupled trade-tick throttles — read by the PM skip predicate.
-    min_decision_interval_minutes: parseNum(minDecisionIntervalMinutes),
-    price_move_threshold_pct: parseNum(priceMoveThresholdPct),
-    max_signal_age_hours: parseNum(maxSignalAgeHours),
-  });
+  // and Backtest. Avoids two slightly-divergent copies. When a Simons node
+  // is wired in, its recommended strategy replaces the manual one wholesale
+  // (per "Strategy mode = Replace"). The manual values remain in useNodeState
+  // unchanged, so unwiring Simons restores them instantly.
+  const buildStrategyConfig = () => {
+    if (simonsOverride) {
+      // The Simons recommendation is already in snake_case (matches the
+      // backend StrategyConfig shape), so we forward it verbatim.
+      return { ...simonsOverride.strategy };
+    }
+    return {
+      style: style || undefined,
+      sizing_rule: sizingRule || undefined,
+      max_position_pct: parseNum(maxPositionPct),
+      max_sector_pct: parseNum(maxSectorPct),
+      holding_period: holdingPeriod || undefined,
+      stop_loss_pct: parseNum(stopLossPct),
+      take_profit_pct: parseNum(takeProfitPct),
+      allow_stocks: allowStocks !== false,
+      allow_options: !!allowOptions,
+      allow_etfs: !!allowEtfs,
+      note: note || undefined,
+      // Decoupled trade-tick throttles — read by the PM skip predicate.
+      min_decision_interval_minutes: parseNum(minDecisionIntervalMinutes),
+      price_move_threshold_pct: parseNum(priceMoveThresholdPct),
+      max_signal_age_hours: parseNum(maxSignalAgeHours),
+    };
+  };
 
   // Read the optional Risk Manager node's config from the canvas. None on the
   // canvas → undefined → backend uses defaults (= pre-PR behaviour).
@@ -491,6 +529,46 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
         <CardContent className="p-0">
           <div className="border-t border-border p-3">
             <div className="flex flex-col gap-4">
+
+              {/* "Driven by Jim Simons" banner — only shown when a Simons
+                  node is wired into this Strategy node. Per the user's
+                  Replace-mode choice: Simons's recommendedStrategy fully
+                  shadows the manual fields for the duration of the wiring.
+                  The fields below show muted + lock icons so the inertness
+                  is loud; unplug Simons in the canvas to take manual
+                  control back. */}
+              {isDrivenBySimons && (
+                <div className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs flex flex-col gap-1">
+                  <div className="flex items-center gap-2 text-amber-500">
+                    <Sigma className="h-3.5 w-3.5" />
+                    <span className="font-medium">Driven by Jim Simons</span>
+                    {simonsOverride?.updatedAt && (
+                      <span className="text-muted-foreground">
+                        · updated {new Date(simonsOverride.updatedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-muted-foreground leading-snug">
+                    The Simons node is publishing its recommended strategy through its
+                    <span className="font-medium"> strategy </span>output handle. Your
+                    typed-in fields are <span className="font-medium">shadowed</span> (preserved,
+                    but not used). Disconnect Simons in the canvas to take manual control back.
+                  </div>
+                  {simonsOverride?.strategy && (
+                    <div className="text-muted-foreground tabular-nums leading-tight">
+                      Style: <span className="text-foreground">{simonsOverride.strategy.style}</span>
+                      {' · '}
+                      Sizing: <span className="text-foreground">{simonsOverride.strategy.sizing_rule}</span>
+                      {' · '}
+                      Max pos: <span className="text-foreground">{simonsOverride.strategy.max_position_pct}%</span>
+                      {' · '}
+                      Hold: <span className="text-foreground">{simonsOverride.strategy.holding_period}</span>
+                      {' · '}
+                      Min interval: <span className="text-foreground">{simonsOverride.strategy.min_decision_interval_minutes}m</span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Replay strategy — re-runs the PM on cached analyst signals from
                   the wiki, so changing strategy params doesn't require re-running
@@ -697,12 +775,27 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
                 </TooltipContent>
               </Tooltip>
 
+              {/* Editable strategy fields — wrapped in a single container
+                  so the Simons-driven state can dim + disable them all at
+                  once. `pointer-events-none` blocks edits; `opacity-60`
+                  signals "this is what would run if you were in control".
+                  Manual values stay in useNodeState unchanged, so unplugging
+                  Simons restores them instantly. */}
+              <div
+                className={cn(
+                  'flex flex-col gap-4 transition-opacity',
+                  isDrivenBySimons && 'opacity-60 pointer-events-none select-none',
+                )}
+                aria-disabled={isDrivenBySimons || undefined}
+              >
               {/* Style + sizing rule */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
                   <Tooltip delayDuration={200}>
                     <TooltipTrigger asChild>
-                      <div className="text-subtitle text-primary">Style</div>
+                      <div className="text-subtitle text-primary flex items-center gap-1">
+                        Style {isDrivenBySimons && <Lock className="h-3 w-3" />}
+                      </div>
                     </TooltipTrigger>
                     <TooltipContent side="right" className="max-w-xs">
                       The trading style the PM should embody — shapes how it weighs analyst signals
@@ -990,8 +1083,16 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
                 />
               </div>
 
+              </div>
+              {/* /editable-strategy-fields wrapper */}
+
               <div className="text-xs text-muted-foreground">
                 Wire: Fundamental Companies → Strategy → Portfolio Manager.
+                {isDrivenBySimons && (
+                  <span className="block mt-1 text-amber-500/80">
+                    (Jim Simons is currently driving — see banner above.)
+                  </span>
+                )}
               </div>
             </div>
           </div>

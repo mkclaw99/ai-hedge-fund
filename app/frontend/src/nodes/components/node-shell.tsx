@@ -5,6 +5,20 @@ import { Handle, Position, useReactFlow } from '@xyflow/react';
 import { Trash2 } from 'lucide-react';
 import { ReactNode } from 'react';
 
+// Named right-side handle. Used by nodes that fan out to more than one
+// downstream node type (e.g. Jim Simons → PM via `signal` and → Strategy
+// via `strategy`). Each handle's `id` is what xyflow stores in the edge's
+// `sourceHandle` field, so the run assembler can tell which output produced
+// which edge.
+export interface RightHandle {
+  id: string;
+  label?: string;
+  /** Vertical position as a percentage of node height (0-100). The default
+   * single-handle layout sits at 50%; named handles space evenly when no
+   * explicit position is given. */
+  top?: number;
+}
+
 export interface NodeShellProps {
   id: string;
   selected?: boolean;
@@ -16,6 +30,10 @@ export interface NodeShellProps {
   children: ReactNode;
   hasLeftHandle?: boolean;
   hasRightHandle?: boolean;
+  /** When provided, replaces the default single right-side handle with
+   * multiple labelled handles stacked vertically. `hasRightHandle` is
+   * ignored when this is set. */
+  rightHandles?: RightHandle[];
   status?: string;
   width?: string;
 }
@@ -31,6 +49,7 @@ export function NodeShell({
   children,
   hasLeftHandle = true,
   hasRightHandle = true,
+  rightHandles,
   status = 'IDLE',
   width = 'w-64',
 }: NodeShellProps) {
@@ -93,14 +112,51 @@ export function NodeShell({
           {children}
         </Card>
       </div>
-      {hasRightHandle && (
-        <Handle
-          type="source"
-          position={Position.Right}
-          className="w-3 h-3 rounded-full bg-gray-500 border-2 border-card absolute right-0 top-1/2 translate-x-1/2 -translate-y-1/2 z-10 transition-all duration-200 hover:bg-gray-500 hover:w-4 hover:h-4 hover:shadow-[0_0_5px_2px_rgba(59,130,246,0.3)]"
-          isConnectable={isConnectable}
-        />
+      {/* Right-side handles. When `rightHandles` is set we render one
+          named handle per entry, evenly spaced vertically (or at explicit
+          `top` percentages if provided). Each handle carries an `id` so
+          edges record which output they came from (xyflow stores it as
+          `sourceHandle` on the edge). The default single-handle path
+          stays the same for nodes that don't opt into multi-handle.
+          xyflow's `<Handle position={Right} />` defaults to top:50% inline-
+          styled; we override via the `style` prop. Inline labels sit just
+          inside the right edge so they don't get clipped by the node card. */}
+      {rightHandles && rightHandles.length > 0 ? (
+        rightHandles.map((h, idx) => {
+          const topPct = h.top != null
+            ? h.top
+            : ((idx + 1) / (rightHandles.length + 1)) * 100;
+          return (
+            <span key={h.id}>
+              <Handle
+                type="source"
+                position={Position.Right}
+                id={h.id}
+                style={{ top: `${topPct}%` }}
+                className="w-3 h-3 rounded-full !bg-gray-500 border-2 border-card transition-all duration-200 hover:!bg-gray-500 hover:!w-4 hover:!h-4 hover:!shadow-[0_0_5px_2px_rgba(59,130,246,0.3)]"
+                isConnectable={isConnectable}
+              />
+              {h.label && (
+                <span
+                  className="absolute right-2 text-[9px] uppercase tracking-wide text-muted-foreground bg-card/80 px-1 rounded whitespace-nowrap pointer-events-none -translate-y-1/2 z-10"
+                  style={{ top: `${topPct}%` }}
+                >
+                  {h.label}
+                </span>
+              )}
+            </span>
+          );
+        })
+      ) : (
+        hasRightHandle && (
+          <Handle
+            type="source"
+            position={Position.Right}
+            className="w-3 h-3 rounded-full bg-gray-500 border-2 border-card absolute right-0 top-1/2 translate-x-1/2 -translate-y-1/2 z-10 transition-all duration-200 hover:bg-gray-500 hover:w-4 hover:h-4 hover:shadow-[0_0_5px_2px_rgba(59,130,246,0.3)]"
+            isConnectable={isConnectable}
+          />
+        )
       )}
     </div>
   );
-} 
+}

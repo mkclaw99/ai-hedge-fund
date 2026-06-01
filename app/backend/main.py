@@ -15,7 +15,7 @@ from app.backend.routes import api_router
 from app.backend.database.connection import engine
 from app.backend.database.models import Base
 from app.backend.services.ollama_service import ollama_service
-from app.backend.services import research_scheduler, trade_scheduler
+from app.backend.services import research_scheduler, simons_scheduler, trade_scheduler
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -40,6 +40,13 @@ async def lifespan(app: FastAPI):
     # refresh loop above; see app/backend/services/trade_scheduler.py.
     if trade_scheduler.is_enabled():
         scheduler_tasks.append(asyncio.create_task(trade_scheduler.scheduler_loop()))
+    # Simons signal-clock scheduler — fires the Jim Simons analyst on the
+    # cadence set by each Simons node on the canvas, independent of both
+    # the analyst clock and the trade clock. The PM doesn't get triggered
+    # by this; it just refreshes Simons's cached signals in the wiki so
+    # the next trade tick (or full run) sees the freshest signal.
+    if simons_scheduler.is_enabled():
+        scheduler_tasks.append(asyncio.create_task(simons_scheduler.scheduler_loop()))
     yield
     for t in scheduler_tasks:
         t.cancel()
