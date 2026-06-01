@@ -352,6 +352,13 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
         # already says everything in plain numbers; we render it directly.
         report = _render_report(signals[ticker])
         analysis = f"{report}\n\n{_CHART_FENCE_OPEN}\n{chart}\n{_CHART_FENCE_CLOSE}\n"
+        # Stash the structured reasoning dict under `forecast` BEFORE we
+        # overwrite `reasoning` below. The PM reads this to render its
+        # `## Forecast Mandate` block (horizon + per-ticker quantiles +
+        # drift + fan width). Without this copy, the only thing the PM
+        # ever saw from Chronos was {signal, confidence} — losing the
+        # entire predictive distribution to a UI-side fence parse.
+        signals[ticker]["forecast"] = signals[ticker].get("reasoning")
         # Swap the structured reasoning dict for the Markdown blob we just
         # built — same content as the SSE analysis, fence and all. Two
         # reasons:

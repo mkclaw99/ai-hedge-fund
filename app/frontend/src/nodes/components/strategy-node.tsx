@@ -9,7 +9,7 @@ import { useFlowContext } from '@/contexts/flow-context';
 import { useLayoutContext } from '@/contexts/layout-context';
 import { useNodeContext } from '@/contexts/node-context';
 import { useFlowConnection } from '@/hooks/use-flow-connection';
-import { getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
+import { addStateChangeListener, getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
 import { primaryAgentModel } from '@/lib/agent-models';
 import { getFlowMemory } from '@/services/memory-api';
 import { type StrategyNode as StrategyNodeT } from '../types';
@@ -60,6 +60,58 @@ const SELECT_CLS =
 const NUM_CLS =
   'nodrag h-9 w-20 rounded-md border border-border bg-node px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
 
+// Translate a bar count + frequency into a wall-clock label so the Strategy
+// node can show "Linked Forecaster: 5min × 288 bars (~24h)" — letting the
+// user spot a holding-period mismatch (months vs hours) at a glance. Mirrors
+// the backend's _human_horizon in portfolio_manager.py.
+function horizonLabel(barCount: number | undefined, frequency: 'day' | 'hour' | '5min' | '1min' | undefined): string {
+  const n = barCount && Number.isFinite(barCount) ? Math.max(0, Math.trunc(barCount)) : 0;
+  if (!n) return '0 bars';
+  const f = frequency || 'day';
+  if (f === 'day') return `~${n} trading day${n === 1 ? '' : 's'}`;
+  if (f === 'hour') {
+    const days = n / 6.5;
+    return `~${n}h (≈${days.toFixed(1)}d)`;
+  }
+  if (f === '5min') {
+    const mins = n * 5;
+    const hrs = mins / 60;
+    if (hrs >= 6.5) return `~${hrs.toFixed(1)}h (≈${(hrs / 6.5).toFixed(2)}d)`;
+    return `~${mins} min (~${hrs.toFixed(1)}h)`;
+  }
+  if (f === '1min') {
+    const hrs = n / 60;
+    if (hrs >= 6.5) return `~${hrs.toFixed(1)}h (≈${(hrs / 6.5).toFixed(2)}d)`;
+    return `~${n} min`;
+  }
+  return `${n} × ${f}`;
+}
+
+// Frequency labels match the Forecaster node's FREQ_OPTIONS so the badge
+// reads the same words as the source-of-truth dropdown.
+const FREQ_LABEL: Record<string, string> = {
+  day: 'Daily',
+  hour: 'Hourly',
+  '5min': '5-Minute',
+  '1min': '1-Minute',
+};
+
+// Holding-period vs forecaster-horizon mismatch detection. Intraday holding
+// (day-trade) + multi-day forecaster horizon, or position/long-term holding
+// + intraday forecaster horizon, are both "the forecaster isn't telling you
+// what you need to know" cases — surface a hint, don't override the user.
+function horizonMismatch(holdingPeriod: string, freq?: string): string | null {
+  if (!freq) return null;
+  const intraday = freq === '1min' || freq === '5min' || freq === 'hour';
+  if ((holdingPeriod === 'position' || holdingPeriod === 'long_term') && intraday) {
+    return 'Forecaster runs intraday but holding period is multi-week+ — its directional call is entry-timing, not thesis.';
+  }
+  if (holdingPeriod === 'day' && freq === 'day') {
+    return 'Forecaster runs at daily resolution but holding period is day-trade — consider switching the Forecaster to Hourly/5-Minute.';
+  }
+  return null;
+}
+
 export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<StrategyNodeT>) {
   const [style, setStyle] = useNodeState<string>(id, 'style', 'value');
   const [sizingRule, setSizingRule] = useNodeState<string>(id, 'sizingRule', 'conviction_weighted');
@@ -101,6 +153,31 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
   const [backtestEndDate, setBacktestEndDate] = useNodeState<string>(id, 'backtestEndDate', today);
   const [backtestError, setBacktestError] = useState<string | null>(null);
   const [trackRecordOpen, setTrackRecordOpen] = useState(false);
+
+  // Force a re-render of the Strategy node when any Forecaster-side knob is
+  // turned (context len / prediction len / bar frequency live in the
+  // node-internal-state store, not in React Flow's node payload). Without
+  // this, the "Linked Forecaster" badge would freeze on whatever the
+  // forecaster was set to when the Strategy node mounted.
+  const [, bumpStateVersion] = useState(0);
+  useEffect(() => {
+    return addStateChangeListener(() => bumpStateVersion((v) => v + 1));
+  }, []);
+
+  // Reactive read of the connected Forecaster node's settings. None on the
+  // canvas → null. The badge below renders "No Forecaster wired" in that
+  // case; handleReplay/handleBacktest fall back to backend defaults.
+  const linkedForecaster: { ctx: number | undefined; pred: number | undefined; freq: 'day' | 'hour' | '5min' | '1min' | undefined } | null = (() => {
+    const f = getNodes().find((n) => n.type === 'forecaster-node');
+    if (!f) return null;
+    const s = getNodeInternalState(f.id) as any;
+    return {
+      ctx: typeof s?.forecasterContextLen === 'number' ? s.forecasterContextLen : undefined,
+      pred: typeof s?.forecasterPredictionLen === 'number' ? s.forecasterPredictionLen : undefined,
+      freq: s?.forecasterBarFrequency,
+    };
+  })();
+  const mismatch = linkedForecaster ? horizonMismatch(holdingPeriod, linkedForecaster.freq) : null;
 
   // Parse a numeric-ish string into a float; non-finite values collapse to
   // undefined so they don't override Pydantic defaults on the backend.
@@ -163,6 +240,13 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
     expandBottomPanel();
     setBottomPanelTab('output');
 
+    // Forecaster knobs — when a Forecaster node is on the canvas, forward
+    // its current settings so the run uses the user's chosen horizon /
+    // frequency rather than the backend defaults (256/10/'day'). The PM's
+    // `## Forecast Mandate` block reads these back from the produced
+    // signals[ticker]['forecast'] payload. Replay skips analysts anyway, so
+    // this only matters when the wiki happens to have stale forecaster
+    // signals — kept for symmetry with Backtest, which DOES re-run them.
     runFlow({
       tickers: memoryTickers,
       // Only the PM node — analysts are skipped (signals come from the wiki).
@@ -173,6 +257,9 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
       model_provider: primary.model_provider as any,
       place_paper_orders: placePaperOrders,
       starting_budget: startingBudget,
+      forecaster_context_len: linkedForecaster?.ctx,
+      forecaster_prediction_len: linkedForecaster?.pred,
+      forecaster_bar_frequency: linkedForecaster?.freq,
       strategy,
       risk_manager: riskManager,
       skip_analysts: true,
@@ -281,6 +368,12 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
       margin_requirement: 0,
       model_name: primary.model_name,
       model_provider: primary.model_provider as any,
+      // Forecaster knobs — Backtest DOES re-run the analyst layer per-day,
+      // so the Forecaster will fire with whatever horizon/frequency the
+      // user picked on the canvas, not the backend default.
+      forecaster_context_len: linkedForecaster?.ctx,
+      forecaster_prediction_len: linkedForecaster?.pred,
+      forecaster_bar_frequency: linkedForecaster?.freq,
       strategy: buildStrategyConfig(),
       risk_manager: buildRiskManagerConfig(),
       flow_id: currentFlowId ?? undefined,
@@ -535,6 +628,49 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
                     onChange={(e) => setMaxSectorPct(e.target.value.replace(/[^0-9]/g, ''))}
                   />
                 </div>
+              </div>
+
+              {/* Linked Forecaster — surfaces the connected Time Series
+                  Forecaster node's horizon/frequency right next to the
+                  holding period the PM will apply. Helps spot mismatches
+                  ("position-period strategy + 24h Chronos forecast"). When
+                  no Forecaster is on the canvas, says so explicitly so the
+                  user knows the PM won't see Chronos input. */}
+              <div className="flex flex-col gap-1">
+                <Tooltip delayDuration={200}>
+                  <TooltipTrigger asChild>
+                    <div className="text-subtitle text-primary">Linked Forecaster</div>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="max-w-xs">
+                    The Time Series Forecaster node on this canvas (if any). Its bar
+                    frequency × prediction length sets the horizon the PM reads in
+                    the `## Forecast Mandate` block. Hold-period mismatch shown below
+                    when relevant.
+                  </TooltipContent>
+                </Tooltip>
+                {linkedForecaster ? (
+                  <div className="flex flex-col gap-1 rounded-md border border-border bg-node px-2 py-1.5 text-xs">
+                    <div>
+                      <span className="text-muted-foreground">Frequency:</span>{' '}
+                      <span className="font-medium">{FREQ_LABEL[linkedForecaster.freq ?? 'day'] ?? linkedForecaster.freq ?? '—'}</span>
+                      {' · '}
+                      <span className="text-muted-foreground">Horizon:</span>{' '}
+                      <span className="font-medium">
+                        {linkedForecaster.pred ?? '?'} bars ({horizonLabel(linkedForecaster.pred, linkedForecaster.freq)})
+                      </span>
+                    </div>
+                    <div className="text-muted-foreground">
+                      Context: {linkedForecaster.ctx ?? '?'} bars
+                    </div>
+                    {mismatch && (
+                      <div className="text-amber-500">⚠ {mismatch}</div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-border bg-node px-2 py-1.5 text-xs text-muted-foreground">
+                    No Forecaster node wired — PM won't see Chronos forecasts.
+                  </div>
+                )}
               </div>
 
               {/* Holding period + stop/target */}
