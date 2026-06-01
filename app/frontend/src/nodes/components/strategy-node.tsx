@@ -1,5 +1,5 @@
 import { useReactFlow, type NodeProps } from '@xyflow/react';
-import { BarChart3, History, Loader2, Play, Square, Target } from 'lucide-react';
+import { BarChart3, History, Loader2, Play, Square, Target, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -11,6 +11,7 @@ import { useNodeContext } from '@/contexts/node-context';
 import { useFlowConnection } from '@/hooks/use-flow-connection';
 import { addStateChangeListener, getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
 import { primaryAgentModel } from '@/lib/agent-models';
+import { cn } from '@/lib/utils';
 import { getFlowMemory } from '@/services/memory-api';
 import { type StrategyNode as StrategyNodeT } from '../types';
 import { NodeShell } from './node-shell';
@@ -161,6 +162,10 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
   const [backtestEndDate, setBacktestEndDate] = useNodeState<string>(id, 'backtestEndDate', today);
   const [backtestError, setBacktestError] = useState<string | null>(null);
   const [trackRecordOpen, setTrackRecordOpen] = useState(false);
+  // "Clear wiki for backtest range" — opt-in destructive op so re-running
+  // a backtest on the same window doesn't double-feed the PM track-record.
+  const [isClearingWiki, setIsClearingWiki] = useState(false);
+  const [clearWikiMsg, setClearWikiMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   // Force a re-render of the Strategy node when any Forecaster-side knob is
   // turned (context len / prediction len / bar frequency live in the
@@ -392,6 +397,40 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
     });
   };
 
+  const handleClearBacktestWiki = async () => {
+    setClearWikiMsg(null);
+    if (!currentFlowId) {
+      setClearWikiMsg({ kind: 'err', text: 'Save the flow first.' });
+      return;
+    }
+    if (!backtestStartDate || !backtestEndDate) {
+      setClearWikiMsg({ kind: 'err', text: 'Pick a start and end date first.' });
+      return;
+    }
+    const ok = window.confirm(
+      `Delete every wiki insight in this flow between ${backtestStartDate} and ${backtestEndDate}?\n\n` +
+      `This is destructive and includes any LIVE-run insights that fell inside this window. ` +
+      `There is no undo.`,
+    );
+    if (!ok) return;
+    setIsClearingWiki(true);
+    try {
+      const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8001';
+      const url = `${API_BASE_URL}/flows/${currentFlowId}/wiki/range?start=${encodeURIComponent(backtestStartDate)}&end=${encodeURIComponent(backtestEndDate)}`;
+      const r = await fetch(url, { method: 'DELETE' });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${r.status}`);
+      }
+      const data = await r.json();
+      setClearWikiMsg({ kind: 'ok', text: `Deleted ${data.deleted} wiki insight(s).` });
+    } catch (e: any) {
+      setClearWikiMsg({ kind: 'err', text: e?.message || 'Clear failed.' });
+    } finally {
+      setIsClearingWiki(false);
+    }
+  };
+
   const ToggleRow = ({
     on, onChange, label, tooltip, badge,
   }: { on: boolean; onChange: (v: boolean) => void; label: string; tooltip: string; badge?: string }) => (
@@ -541,6 +580,46 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
                 </Tooltip>
                 {backtestError && (
                   <div className="text-xs text-red-500">{backtestError}</div>
+                )}
+                {/* "Clear wiki for backtest range" — destructive, opt-in.
+                    Without it, re-running the same backtest on the same date
+                    window double-feeds the PM's track-record (it sees the
+                    first run's decisions as if they were live history). */}
+                <Tooltip delayDuration={200}>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={isClearingWiki || !currentFlowId}
+                      onClick={handleClearBacktestWiki}
+                      className="nodrag w-full justify-center gap-2 border-red-500/40 text-red-500 hover:bg-red-500/10 hover:text-red-500"
+                      aria-label="Clear wiki entries in the backtest date range"
+                    >
+                      {isClearingWiki ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                      {isClearingWiki ? 'Clearing…' : 'Clear wiki for backtest range'}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-xs">
+                    Delete every analyst + PM insight in this flow's wiki between the
+                    Backtest dates. Use before re-running a backtest on the same window
+                    so the second run's PM doesn't see the first run's decisions as
+                    track-record. Live-run insights inside the window are deleted too —
+                    so don't click this unless you know which dates were simulation vs
+                    real.
+                  </TooltipContent>
+                </Tooltip>
+                {clearWikiMsg && (
+                  <div className={cn(
+                    "rounded-md border px-2 py-1.5 text-xs",
+                    clearWikiMsg.kind === "ok"
+                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-500"
+                      : "border-red-500/40 bg-red-500/10 text-red-500",
+                  )}>{clearWikiMsg.text}</div>
                 )}
               </div>
 

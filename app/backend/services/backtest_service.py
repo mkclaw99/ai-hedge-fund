@@ -299,7 +299,16 @@ class BacktestService:
         # Pre-fetch all data at the start
         self.prefetch_data()
 
-        dates = pd.date_range(self.start_date, self.end_date, freq="B")
+        # Business days, then drop US market holidays. Without the holiday
+        # filter, Memorial Day / Independence Day / Thanksgiving / Christmas
+        # iterations would either NaN-out via missing-data (current
+        # behaviour, silently skipped down in the loop body) or — if
+        # yfinance happens to return a backfilled value — produce a spurious
+        # decision against data Alpaca never saw. Skipping them up front
+        # also keeps the day-count + progress callbacks honest.
+        from app.backend.services.market_hours import is_us_market_holiday
+        business_days = pd.date_range(self.start_date, self.end_date, freq="B")
+        dates = pd.DatetimeIndex([d for d in business_days if not is_us_market_holiday(d.date())])
         performance_metrics = {
             "sharpe_ratio": 0.0,
             "sortino_ratio": 0.0,
@@ -321,7 +330,13 @@ class BacktestService:
             # Allow other async operations to run
             await asyncio.sleep(0)
 
-            lookback_start = (current_date - timedelta(days=30)).strftime("%Y-%m-%d")
+            # Lookback window — calendar days back from the simulated "today".
+            # Default 252 (~1 year) so Technicals' mom_6m (126 trading days)
+            # has the data it needs; the pre-fix hardcoded 30 was way too
+            # tight and silently broke half of Technicals + the RM's 30-day
+            # vol calc. See BacktestRequest.backtest_lookback_days docstring.
+            lookback_days = int(getattr(self.request, "backtest_lookback_days", None) or 252)
+            lookback_start = (current_date - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
             current_date_str = current_date.strftime("%Y-%m-%d")
             previous_date_str = (current_date - timedelta(days=1)).strftime("%Y-%m-%d")
 

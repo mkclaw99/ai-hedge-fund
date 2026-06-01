@@ -171,4 +171,42 @@ async def search_flows(name: str, db: Session = Depends(get_db)):
         flows = repo.get_flows_by_name(name)
         return [FlowSummaryResponse.from_orm(flow) for flow in flows]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to search flows: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Failed to search flows: {str(e)}")
+
+
+@router.delete("/{flow_id}/wiki/range")
+async def delete_flow_wiki_range(
+    flow_id: int,
+    start: str,
+    end: str,
+    db: Session = Depends(get_db),
+):
+    """Delete every wiki insight in ``[start, end]`` for the given flow.
+
+    Backstop for backtest re-runs on the same date window — without this,
+    the second run's PM sees the first run's decisions as track-record and
+    the simulation becomes a feedback loop on its own prior output.
+
+    Date format ``YYYY-MM-DD`` inclusive on both ends. Returns
+    ``{deleted: N}`` where N is the count of source files removed.
+    Per-ticker and per-analyst derived pages are left alone — they
+    re-derive on next ingest.
+
+    Returns 404 when ``flow_id`` doesn't exist in the DB. We can't infer
+    that from ``flow_root`` (which generates a path for any non-falsy
+    slug — calling WikiMemory(root) would then silently mkdir() an empty
+    tree for the non-existent flow), so we DB-check first."""
+    repo = FlowRepository(db)
+    if not repo.get_flow_by_id(flow_id):
+        raise HTTPException(status_code=404, detail=f"Flow {flow_id} not found")
+    from src.memory.ingest import flow_root
+    from src.memory.store import WikiMemory
+    root = flow_root(f"flow-{flow_id}")
+    if root is None:
+        raise HTTPException(status_code=404, detail=f"No wiki for flow {flow_id}")
+    try:
+        wiki = WikiMemory(root)
+        n = wiki.delete_insights_in_range(start, end)
+        return {"deleted": n, "start": start, "end": end}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete wiki range: {e}")

@@ -3,6 +3,9 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 import asyncio
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.backend.database import get_db
 from app.backend.models.schemas import ErrorResponse, HedgeFundRequest, BacktestRequest, BacktestDayResult, BacktestPerformanceMetrics
@@ -218,6 +221,21 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
 async def backtest(request_data: BacktestRequest, request: Request, db: Session = Depends(get_db)):
     """Run a continuous backtest over a time period with streaming updates."""
     try:
+        # Defense in depth: a backtest must NEVER fire real (paper or live)
+        # orders. Each simulated day passes the request through to graph.py's
+        # `_place_paper_orders_for_decisions` gate (graph.py:323), which
+        # fires Alpaca orders at the CURRENT market price — irrelevant to
+        # whichever historical day the backtest is iterating. The Strategy
+        # node's UI doesn't set `place_paper_orders=True` for backtests
+        # today, but a malicious or buggy client could; this gate makes the
+        # invariant a server-side guarantee rather than a UI convention.
+        if getattr(request_data, "place_paper_orders", False):
+            logger.warning(
+                "backtest: client sent place_paper_orders=True; forcing False "
+                "(real orders for historical simulation are never allowed)"
+            )
+            request_data.place_paper_orders = False
+
         # Hydrate API keys from database if not provided
         if not request_data.api_keys:
             api_key_service = ApiKeyService(db)
