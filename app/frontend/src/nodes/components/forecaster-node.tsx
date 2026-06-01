@@ -603,6 +603,24 @@ interface DetailDialogProps {
   controls: ChronosControls;
 }
 
+// Per-field stale state. The dropdown for a stale field gets a yellow
+// ring + ⚠, only the fields that actually drifted are marked. Context_len
+// is intentionally not part of staleness (yfinance hard-caps intraday
+// history, so requested vs returned bar count rarely matches one-to-one
+// even on a fresh run — would false-positive every time).
+type StaleInfo = {
+  any: boolean;
+  freq: boolean;
+  pred: boolean;
+};
+
+function computeStale(forecast: ForecastPayload | null, controls: ChronosControls): StaleInfo {
+  if (!forecast) return { any: false, freq: false, pred: false };
+  const freq = (forecast.frequency ?? 'day') !== controls.barFrequency;
+  const pred = forecast.horizon_days !== controls.predictionLen;
+  return { any: freq || pred, freq, pred };
+}
+
 function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onTickerChange, forecastsByTicker, controls }: DetailDialogProps) {
   const forecast = activeTicker ? forecastsByTicker[activeTicker] : null;
   // Stale-chart detection: the chart's axes + cell labels reflect whatever
@@ -610,13 +628,8 @@ function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onT
   // changed those settings in the dropdowns above, the chart is out of date
   // — and there's no way to tell visually, because the labels still say
   // whatever the prior run was. Surface this gap explicitly so the user knows
-  // a Refresh is needed. Context length isn't compared: yfinance hard-caps
-  // intraday history (1-min ≤ 7d, 5-min ≤ 60d), so returned-bar-count never
-  // matches requested-bar-count one-to-one and would false-positive.
-  const isStale = forecast
-    ? ((forecast.frequency ?? 'day') !== controls.barFrequency)
-      || (forecast.horizon_days !== controls.predictionLen)
-    : false;
+  // a Refresh is needed.
+  const stale = computeStale(forecast, controls);
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
       <DialogContent
@@ -632,8 +645,8 @@ function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onT
             <span>Chronos-2 Forecast{activeTicker ? ` · ${activeTicker}` : ''}</span>
           </DialogTitle>
         </DialogHeader>
-        <DialogChronosSettings controls={controls} />
-        {isStale && forecast && (
+        <DialogChronosSettings controls={controls} stale={stale} />
+        {stale.any && forecast && (
           <StaleChartBanner
             currentFreq={controls.barFrequency}
             currentPred={controls.predictionLen}
@@ -642,7 +655,19 @@ function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onT
           />
         )}
         {forecast ? (
-          <DetailBody forecast={forecast} tickers={tickers} activeTicker={activeTicker} onTickerChange={onTickerChange} />
+          // (3) chart fade when stale — opacity + grayscale + pointer-events
+          // off so a user trying to read the labels gets a visual "this is
+          // outdated" rather than a clean chart that lies. CSS transition so
+          // it fades back smoothly after a Refresh completes.
+          <div
+            className={cn(
+              "flex-1 min-h-0 transition-[opacity,filter] duration-300",
+              stale.any && "opacity-50 grayscale pointer-events-none select-none",
+            )}
+            aria-busy={stale.any}
+          >
+            <DetailBody forecast={forecast} tickers={tickers} activeTicker={activeTicker} onTickerChange={onTickerChange} />
+          </div>
         ) : (
           <div className="p-6 text-sm text-muted-foreground text-center">No forecast to display.</div>
         )}
@@ -686,7 +711,7 @@ function StaleChartBanner({
 const clampCtxValue = (n: number) => Math.max(CTX_MIN, Math.min(CTX_MAX, Math.round(n) || CTX_DEFAULT));
 const clampPredValue = (n: number) => Math.max(PRED_MIN, Math.min(PRED_MAX, Math.round(n) || PRED_DEFAULT));
 
-function DialogChronosSettings({ controls }: { controls: ChronosControls }) {
+function DialogChronosSettings({ controls, stale }: { controls: ChronosControls; stale?: StaleInfo }) {
   const {
     barFrequency, setBarFrequency,
     contextLen, setContextLen,
@@ -694,6 +719,57 @@ function DialogChronosSettings({ controls }: { controls: ChronosControls }) {
     onRefresh, isRefreshing, canRefresh, tickerCount,
   } = controls;
   const activeFreq = FREQ_OPTIONS.find((o) => o.value === barFrequency) ?? FREQ_OPTIONS[0];
+  // (1) Per-field stale ring: only the dropdowns whose value drifted from
+  // the rendered chart get the amber ring + ⚠. Context-len is excluded
+  // from staleness (see computeStale).
+  const freqStale = !!stale?.freq;
+  const predStale = !!stale?.pred;
+  const anyStale = !!stale?.any;
+  // (3) Amber Refresh button when stale: same control, but swaps from
+  // outline → amber border + amber text + filled icon. Disabled (during
+  // refresh / before tickers exist) still wins visually.
+  const refreshClasses = cn(
+    'flex items-center gap-2 px-3 py-1 rounded border text-sm transition-colors',
+    'disabled:opacity-40 disabled:cursor-not-allowed',
+    anyStale && !isRefreshing && canRefresh
+      ? 'border-amber-500/60 text-amber-500 bg-amber-500/10 hover:bg-amber-500/15 hover:border-amber-500'
+      : 'border-border hover:border-primary/40 hover:text-foreground',
+  );
+  // Per-control wrapper that adds the amber ring + the small ⚠ tag next to
+  // the label when stale. Mirrors how StaleChartBanner phrases the issue.
+  const FieldWrap = ({ label, isStale, children, tooltip }: {
+    label: string;
+    isStale: boolean;
+    children: React.ReactNode;
+    tooltip: React.ReactNode;
+  }) => (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs uppercase tracking-wide text-muted-foreground flex items-center gap-1">
+            <span>{label}</span>
+            {isStale && (
+              <span
+                aria-label="Setting changed since last refresh"
+                className="text-amber-500 normal-case tracking-normal text-[10px] font-medium"
+              >⚠ pending</span>
+            )}
+          </label>
+          <div
+            className={cn(
+              "rounded transition-shadow",
+              isStale && "ring-1 ring-amber-500/60",
+            )}
+          >
+            {children}
+          </div>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-[320px] text-xs">
+        {tooltip}
+      </TooltipContent>
+    </Tooltip>
+  );
   return (
     <TooltipProvider>
       <div className="rounded border border-border bg-node/40 p-3">
@@ -706,11 +782,7 @@ function DialogChronosSettings({ controls }: { controls: ChronosControls }) {
                 type="button"
                 onClick={onRefresh}
                 disabled={isRefreshing || !canRefresh}
-                className={cn(
-                  'flex items-center gap-2 px-3 py-1 rounded border border-border text-sm transition-colors',
-                  'hover:border-primary/40 hover:text-foreground',
-                  'disabled:opacity-40 disabled:cursor-not-allowed',
-                )}
+                className={refreshClasses}
                 aria-label="Refresh forecast"
               >
                 {isRefreshing ? (
@@ -718,7 +790,7 @@ function DialogChronosSettings({ controls }: { controls: ChronosControls }) {
                 ) : (
                   <RefreshCw className="h-3.5 w-3.5" />
                 )}
-                <span>{isRefreshing ? 'Refreshing…' : 'Refresh forecast'}</span>
+                <span>{isRefreshing ? 'Refreshing…' : (anyStale ? 'Refresh forecast — pending changes' : 'Refresh forecast')}</span>
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="max-w-[320px] text-xs">
@@ -729,76 +801,62 @@ function DialogChronosSettings({ controls }: { controls: ChronosControls }) {
           </Tooltip>
         </div>
         <div className="grid grid-cols-3 gap-3">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="flex flex-col gap-1">
-                <label className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Bar frequency
-                </label>
-                <select
-                  value={barFrequency}
-                  onChange={(e) => setBarFrequency(e.target.value as BarFrequency)}
-                  className="w-full rounded border border-border bg-node/60 px-3 py-1.5 text-base text-foreground focus:outline-none focus:border-primary/50"
-                >
-                  {FREQ_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-              </div>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="max-w-[320px] text-xs">
-              {activeFreq.hint}
-            </TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="flex flex-col gap-1">
-                <label className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Context bars
-                </label>
-                <input
-                  type="number"
-                  min={CTX_MIN}
-                  max={CTX_MAX}
-                  step={1}
-                  value={contextLen}
-                  onChange={(e) => setContextLen(Number(e.target.value) || CTX_DEFAULT)}
-                  onBlur={(e) => setContextLen(clampCtxValue(Number(e.target.value)))}
-                  className="w-full rounded border border-border bg-node/60 px-3 py-1.5 text-base tabular-nums text-foreground focus:outline-none focus:border-primary/50"
-                />
-              </div>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="max-w-[320px] text-xs">
-              Past bars Chronos-2 reads as context. Range {CTX_MIN}–{CTX_MAX}.
-              More context generally improves the forecast but costs a slower
-              forward pass. Intraday frequencies clip to available history
-              (1m≤7d, 5m≤60d, 1h≤730d).
-            </TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="flex flex-col gap-1">
-                <label className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Prediction bars
-                </label>
-                <input
-                  type="number"
-                  min={PRED_MIN}
-                  max={PRED_MAX}
-                  step={1}
-                  value={predictionLen}
-                  onChange={(e) => setPredictionLen(Number(e.target.value) || PRED_DEFAULT)}
-                  onBlur={(e) => setPredictionLen(clampPredValue(Number(e.target.value)))}
-                  className="w-full rounded border border-border bg-node/60 px-3 py-1.5 text-base tabular-nums text-foreground focus:outline-none focus:border-primary/50"
-                />
-              </div>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="max-w-[320px] text-xs">
-              Bars to forecast forward. Range {PRED_MIN}–{PRED_MAX}.
-              Longer horizons produce wider fans (lower confidence) — Chronos
-              is most accurate at the short end.
-            </TooltipContent>
-          </Tooltip>
+          <FieldWrap label="Bar frequency" isStale={freqStale} tooltip={activeFreq.hint}>
+            <select
+              value={barFrequency}
+              onChange={(e) => setBarFrequency(e.target.value as BarFrequency)}
+              className="w-full rounded border border-border bg-node/60 px-3 py-1.5 text-base text-foreground focus:outline-none focus:border-primary/50"
+            >
+              {FREQ_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </FieldWrap>
+          <FieldWrap
+            label="Context bars"
+            isStale={false}
+            tooltip={
+              <>
+                Past bars Chronos-2 reads as context. Range {CTX_MIN}–{CTX_MAX}.
+                More context generally improves the forecast but costs a slower
+                forward pass. Intraday frequencies clip to available history
+                (1m≤7d, 5m≤60d, 1h≤730d).
+              </>
+            }
+          >
+            <input
+              type="number"
+              min={CTX_MIN}
+              max={CTX_MAX}
+              step={1}
+              value={contextLen}
+              onChange={(e) => setContextLen(Number(e.target.value) || CTX_DEFAULT)}
+              onBlur={(e) => setContextLen(clampCtxValue(Number(e.target.value)))}
+              className="w-full rounded border border-border bg-node/60 px-3 py-1.5 text-base tabular-nums text-foreground focus:outline-none focus:border-primary/50"
+            />
+          </FieldWrap>
+          <FieldWrap
+            label="Prediction bars"
+            isStale={predStale}
+            tooltip={
+              <>
+                Bars to forecast forward. Range {PRED_MIN}–{PRED_MAX}.
+                Longer horizons produce wider fans (lower confidence) — Chronos
+                is most accurate at the short end.
+              </>
+            }
+          >
+            <input
+              type="number"
+              min={PRED_MIN}
+              max={PRED_MAX}
+              step={1}
+              value={predictionLen}
+              onChange={(e) => setPredictionLen(Number(e.target.value) || PRED_DEFAULT)}
+              onBlur={(e) => setPredictionLen(clampPredValue(Number(e.target.value)))}
+              className="w-full rounded border border-border bg-node/60 px-3 py-1.5 text-base tabular-nums text-foreground focus:outline-none focus:border-primary/50"
+            />
+          </FieldWrap>
         </div>
       </div>
     </TooltipProvider>
