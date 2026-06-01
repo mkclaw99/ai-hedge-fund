@@ -8,7 +8,7 @@ import { ModelSelector } from '@/components/ui/llm-selector';
 import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
 import { getDefaultModel, getModels, LanguageModel } from '@/data/models';
-import { useNodeState } from '@/hooks/use-node-state';
+import { getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
 import { cn } from '@/lib/utils';
 import { type AgentNode } from '../types';
 import { getStatusColor } from '../utils';
@@ -44,12 +44,31 @@ export function AgentNode({
   // Load models on mount, defaulting to the system default (Gemini) so a
   // freshly-dropped analyst uses a working model instead of "Auto", which the
   // backend resolves to OpenAI and errors on without an OpenAI key.
+  //
+  // CLOSURE-RACE FIX: read the latest `selectedModel` from flowStateManager
+  // inside the effect body, NOT the closure-captured value. The effect deps
+  // exclude `selectedModel` (intentional — we don't want re-runs on every
+  // pick) so the closure freezes at first-render time. On a fresh page reload
+  // the first render can run BEFORE `loadFlow` has hydrated flowStateManager,
+  // making the closure see `null` even though the user has a saved choice.
+  // Then while the async getModels()/getDefaultModel() are in flight, the
+  // useNodeState change-listener rehydrates the saved value into `selectedModel`
+  // (good!), but the closure body still evaluates with the stale null and
+  // overwrites the rehydrated saved value with the default — exactly the
+  // "always resets to Gemini 3.1 Pro" symptom. Reading from the state
+  // manager AFTER the awaits guarantees we see the post-rehydrate value.
   useEffect(() => {
     const loadModels = async () => {
       try {
         const [models, defaultModel] = await Promise.all([getModels(), getDefaultModel()]);
         setAvailableModels(models);
-        if (!selectedModel && defaultModel) {
+        // Latest-write-wins read against the source of truth, escaping the
+        // closure capture. `undefined` here means the key was never persisted
+        // (= fresh node); `null` means the user explicitly picked "Auto" and
+        // we must respect that, not stomp it with the default.
+        const persisted = getNodeInternalState(id);
+        const currentSelected = persisted ? persisted.selectedModel : undefined;
+        if (currentSelected === undefined && defaultModel) {
           setSelectedModel(defaultModel);
         }
       } catch (error) {
@@ -59,7 +78,7 @@ export function AgentNode({
     };
 
     loadModels();
-  }, [setAvailableModels]);
+  }, [setAvailableModels, id]);
 
   // Update the node context when the model changes
   useEffect(() => {
