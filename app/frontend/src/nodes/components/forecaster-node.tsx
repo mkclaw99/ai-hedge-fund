@@ -818,7 +818,7 @@ function DetailBody({
       <ul className="text-sm text-muted-foreground leading-snug flex flex-wrap gap-x-6 gap-y-1">
         <li><span className="text-foreground">Inner band</span> — 50% prediction interval (q25–q75)</li>
         <li><span className="text-foreground">Outer band</span> — 80% prediction interval (q10–q90)</li>
-        <li><span className="text-foreground">Confidence</span> — precision per step (narrow fan = confident); decays as horizon extends</li>
+        <li><span className="text-foreground">Confidence</span> — derived from fan width; available in the hover tooltip</li>
       </ul>
     </div>
   );
@@ -857,16 +857,23 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
   const padL = 100;
   const padR = 24;
   const padTopPrice = 22;
-  const padBetween = 36;
   const padBottom = 50;
-  const CONF_H = 180;
   const W = dims.w;
   const H = dims.h;
-  const PRICE_H = Math.max(140, H - padTopPrice - padBetween - CONF_H - padBottom);
+  // The price panel now fills the whole chart — there used to be a
+  // confidence sub-plot below, but that was a 1D projection of the
+  // upper chart's fan width (= q90 − q10). The same information lives
+  // in the band the user already sees; the per-step confidence number
+  // is surfaced in the hover tooltip instead. Dropping the sub-plot
+  // roughly doubled the y-resolution of the price axis.
+  const PRICE_H = Math.max(140, H - padTopPrice - padBottom);
   const FS_TICK = 20;
   const FS_LABEL = 20;
 
-  const { history, q10, q25, q50, q75, q90, confidence } = forecast;
+  // confidence is no longer plotted in this chart (its sub-panel was
+  // a 1D projection of the q10/q90 band already visible above). It's
+  // still read inside HoverTooltip for the per-step readout.
+  const { history, q10, q25, q50, q75, q90 } = forecast;
   const histN = history.length;
   const fcN = q50.length;
   const total = histN + fcN;
@@ -883,10 +890,6 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
   const yMax = maxP + padPrice;
   const yRange = yMax - yMin || 1;
   const yAtPrice = (v: number) => padTopPrice + (1 - (v - yMin) / yRange) * PRICE_H;
-
-  // Confidence y-axis — fixed 0..100.
-  const confTop = padTopPrice + PRICE_H + padBetween;
-  const yAtConf = (v: number) => confTop + (1 - v / 100) * CONF_H;
 
   const t = tone(forecast);
   const stroke = TONE_STROKE[t];
@@ -909,13 +912,6 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
   };
 
   const q50Path = [lastHist, ...q50].map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(fcStart + i).toFixed(2)} ${yAtPrice(v).toFixed(2)}`).join(' ');
-
-  // Confidence area path (fills below the line).
-  const confLinePoints = confidence.map((c, i) => `${xAt(fcStart + 1 + i).toFixed(2)},${yAtConf(c).toFixed(2)}`);
-  const confArea = confidence.length
-    ? `M ${xAt(fcStart + 1).toFixed(2)} ${yAtConf(0).toFixed(2)} L ${confLinePoints.join(' L ')} L ${xAt(fcStart + confidence.length).toFixed(2)} ${yAtConf(0).toFixed(2)} Z`
-    : '';
-  const confLine = confidence.length ? `M ${confLinePoints.join(' L ')}` : '';
 
   // Axis tick values — 5 evenly-spaced over the y-domain so the chart is
   // readable as a numeric reference, not just a shape.
@@ -1040,25 +1036,8 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
         <path d={histPath} fill="none" stroke="currentColor" strokeWidth={1.2} opacity={0.65} />
         <path d={q50Path} fill="none" stroke={stroke} strokeWidth={1.6} />
 
-        {/* Today separator (spans both panels) */}
-        <line x1={sepX} y1={padTopPrice} x2={sepX} y2={confTop + CONF_H} stroke="currentColor" strokeWidth={0.5} strokeDasharray="2,2" opacity={0.4} />
-
-        {/* Confidence panel frame + grid */}
-        <line x1={padL} y1={confTop} x2={padL} y2={confTop + CONF_H} stroke="currentColor" strokeWidth={0.5} opacity={0.3} />
-        <line x1={padL} y1={confTop + CONF_H} x2={W - padR} y2={confTop + CONF_H} stroke="currentColor" strokeWidth={0.5} opacity={0.3} />
-        {[0, 25, 50, 75, 100].map((v) => (
-          <g key={v}>
-            <line x1={padL - 6} y1={yAtConf(v)} x2={padL} y2={yAtConf(v)} stroke="currentColor" strokeWidth={0.5} opacity={0.4} />
-            <line x1={padL} y1={yAtConf(v)} x2={W - padR} y2={yAtConf(v)} stroke="currentColor" strokeWidth={0.3} opacity={0.15} />
-            <text x={padL - 10} y={yAtConf(v)} dy=".35em" textAnchor="end" fontSize={FS_TICK} fill="currentColor" opacity={0.75}>
-              {v}
-            </text>
-          </g>
-        ))}
-
-        {/* Confidence area + line */}
-        {confArea && <path d={confArea} fill={TONE_FILL_INNER[t]} stroke="none" />}
-        {confLine && <path d={confLine} fill="none" stroke={stroke} strokeWidth={1.6} />}
+        {/* Today separator */}
+        <line x1={sepX} y1={padTopPrice} x2={sepX} y2={padTopPrice + PRICE_H} stroke="currentColor" strokeWidth={0.5} strokeDasharray="2,2" opacity={0.4} />
 
         {/* X-axis labels — adaptive step so the bottom row stays
             readable at any chart size. Target ~15 labels; always show
@@ -1079,24 +1058,20 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
           ));
         })()}
 
-        {/* Panel labels — anchor top-left of each panel. dy=".9em" pushes
-            the text fully under the (otherwise zero-height) baseline so
-            it sits inside the panel rather than overlapping the frame. */}
+        {/* Panel label — dy=".9em" pushes text under the zero-height
+            baseline so it sits inside the panel rather than over the frame. */}
         <text x={padL + 8} y={padTopPrice} dy=".9em" fontSize={FS_LABEL} fill="currentColor" opacity={0.6}>price (USD)</text>
-        <text x={padL + 8} y={confTop} dy=".9em" fontSize={FS_LABEL} fill="currentColor" opacity={0.6}>confidence (0-100)</text>
 
-        {/* Hover overlay */}
+        {/* Hover overlay — vertical line spans the price panel only;
+            the per-step confidence shows up in the tooltip strip below. */}
         {hoverX != null && (
           <>
-            <line x1={hoverX} y1={padTopPrice} x2={hoverX} y2={confTop + CONF_H} stroke="currentColor" strokeWidth={0.6} opacity={0.5} />
+            <line x1={hoverX} y1={padTopPrice} x2={hoverX} y2={padTopPrice + PRICE_H} stroke="currentColor" strokeWidth={0.6} opacity={0.5} />
             {histIdx != null && (
               <circle cx={hoverX} cy={yAtPrice(history[histIdx])} r={2.5} fill="currentColor" />
             )}
             {fcIdx != null && (
-              <>
-                <circle cx={hoverX} cy={yAtPrice(q50[fcIdx])} r={3} fill={stroke} />
-                <circle cx={hoverX} cy={yAtConf(confidence[fcIdx] ?? 0)} r={3} fill={stroke} />
-              </>
+              <circle cx={hoverX} cy={yAtPrice(q50[fcIdx])} r={3} fill={stroke} />
             )}
           </>
         )}
