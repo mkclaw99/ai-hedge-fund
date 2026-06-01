@@ -251,6 +251,44 @@ def generate_trading_decision(
     if not tickers_for_llm:
         return PortfolioManagerOutput(decisions=prefilled_decisions)
 
+    # Decoupled trade-tick: drop tickers that don't meet the re-decide
+    # predicate (no fill, time elapsed, price moved, or stop/target hit).
+    # The predicate is a no-op when the Strategy node hasn't set throttle
+    # thresholds OR when this is a regular full-graph run (no last fills
+    # vs no last fills → "no prior fill" branch lets everyone through).
+    # Gate on refresh_prices=True so a normal user-Play run never gets
+    # throttled — only the scheduled tick path does.
+    strategy = (state.get("metadata", {}) or {}).get("strategy")
+    request = (state.get("metadata", {}) or {}).get("request")
+    is_trade_tick = bool(request is not None and getattr(request, "refresh_prices", False))
+    if is_trade_tick:
+        api_keys_for_fills = getattr(request, "api_keys", None) if request else None
+        fills = _last_fill_by_ticker(api_keys_for_fills, tickers_for_llm)
+        survivors: list[str] = []
+        for t in tickers_for_llm:
+            skip, reason = _should_skip_ticker(
+                t,
+                current_price=float(current_prices.get(t, 0.0)),
+                last_fill=fills.get(t),
+                strategy=strategy,
+                portfolio=portfolio,
+            )
+            if skip:
+                prefilled_decisions[t] = PortfolioDecision(
+                    action="hold", quantity=0, confidence=100.0,
+                    reasoning=f"Throttled — {reason}",
+                )
+            else:
+                survivors.append(t)
+        if survivors != tickers_for_llm:
+            logger.info(
+                "trade-tick throttle: %d/%d tickers re-decided (rest held)",
+                len(survivors), len(tickers_for_llm),
+            )
+        tickers_for_llm = survivors
+        if not tickers_for_llm:
+            return PortfolioManagerOutput(decisions=prefilled_decisions)
+
     # ------------------------------------------------------------------
     # Closing the track-record → PM learning loop.
     #
@@ -265,7 +303,7 @@ def generate_trading_decision(
     # All three share the same outcomes list to keep the picture consistent
     # — there is exactly one source of truth for "what's happened so far."
     # ------------------------------------------------------------------
-    strategy = (state.get("metadata", {}) or {}).get("strategy")
+    # `strategy` was bound earlier (above the trade-tick throttle block).
     outcomes = _compute_outcomes_for_pm(strategy, tickers_for_llm, state)
 
     # Confidence calibrations are O(outcomes) to build once and O(1) per
@@ -290,10 +328,45 @@ def generate_trading_decision(
     root = flow_root(flow_slug)
     prior = read_back(tickers_for_llm, root=root) if root else ""
 
+    # Signal-age — only meaningful on decoupled trade-tick replays where the
+    # cached signals have a `date` field (from read_latest_signals(...,
+    # with_date=True)). On live analyst runs every signal is fresh so the
+    # block renders empty and is collapsed below. Also gates the run: if the
+    # *average* age exceeds the Strategy's max_signal_age_hours (default
+    # 168h = 7d), bail out with all-holds — refusing to trade on signals
+    # the user has implicitly already let go stale. Per-ticker max is
+    # rendered in the block so the PM can downweight individuals.
+    raw_signals_full = (state.get("data", {}) or {}).get("analyst_signals", {}) or {}
+    end_date_for_age = (state.get("data", {}) or {}).get("end_date")
+    ages = _signal_ages(raw_signals_full, today=end_date_for_age)
+    max_signal_age_h = None
+    if isinstance(strategy, dict):
+        v = strategy.get("max_signal_age_hours")
+        try:
+            max_signal_age_h = float(v) if v is not None else None
+        except (TypeError, ValueError):
+            max_signal_age_h = None
+    if ages and max_signal_age_h is not None and max_signal_age_h > 0:
+        avg_age = sum(ages.values()) / len(ages)
+        if avg_age > max_signal_age_h:
+            logger.warning(
+                "PM bailing out — average signal age %.1fh exceeds max %.1fh",
+                avg_age, max_signal_age_h,
+            )
+            # All-holds with an explicit reasoning so the user can grep this
+            # in the wiki when an unexpectedly quiet day happens.
+            for t in tickers_for_llm:
+                prefilled_decisions[t] = PortfolioDecision(
+                    action="hold", quantity=0, confidence=100.0,
+                    reasoning=f"Signals avg {avg_age:.0f}h old > max {max_signal_age_h:.0f}h — declining to trade on stale theses.",
+                )
+            return PortfolioManagerOutput(decisions=prefilled_decisions)
+
     # Strategy node config — declares trading rules (style, sizing, caps, etc.).
     # When wired, the PM reads it as part of its mandate. When absent, an
     # empty block is rendered and the PM uses default behaviour (back-compat).
     strategy_block = _render_strategy_block(strategy)
+    signal_age_block = _render_signal_age_block(ages, tickers_for_llm)
 
     # Forecast Mandate — the Time Series Forecaster's full predictive
     # distribution per ticker (horizon, frequency, q10/q50/q90 endpoint,
@@ -380,6 +453,10 @@ def generate_trading_decision(
                 "  • `hist_rate` / `hist_n` — the hit rate and sample size behind `cal_conf`.\n"
                 "You may also receive prior accumulated research from earlier runs as background — "
                 "weigh it, but the current signals take precedence.\n"
+                "If a `## Signal Age` block is present, the signals you're acting on are CACHED from a "
+                "prior analyst run — price data underneath is fresh, but the directional theses may be "
+                "hours or days old. Weigh stale signals less when they conflict with what current price "
+                "action and forecast quantiles suggest.\n"
                 "If a `## Strategy Mandate` block is present, follow it: it sets your trading style, "
                 "sizing rule, caps, holding period, and which instruments you may consider.\n"
                 "If a `## Forecast Mandate (Chronos-2)` block is present, it shows the Time Series "
@@ -411,7 +488,7 @@ def generate_trading_decision(
                 "Signals:\n{signals}\n\n"
                 "Allowed:\n{allowed}\n\n"
                 "Prior research:\n{prior}\n\n"
-                "{strategy}{forecast}{derivatives}{rules}{track_record}"
+                "{signal_age}{strategy}{forecast}{derivatives}{rules}{track_record}"
                 "Format:\n"
                 "{{\n"
                 '  "decisions": {{\n'
@@ -426,6 +503,7 @@ def generate_trading_decision(
         "signals": json.dumps(compact_signals, separators=(",", ":"), ensure_ascii=False),
         "allowed": json.dumps(compact_allowed, separators=(",", ":"), ensure_ascii=False),
         "prior": prior or "(none on record)",
+        "signal_age": signal_age_block + ("\n" if signal_age_block else ""),
         "strategy": strategy_block,
         "forecast": forecast_block,
         "derivatives": derivatives_block,
@@ -621,6 +699,225 @@ def _render_forecast_block(analyst_signals: dict, tickers_for_llm: list[str]) ->
         "call as **entry timing**, not a thesis — a 24 h Chronos forecast can't justify a months-long position.",
         "",
     ])
+    return "\n".join(lines)
+
+
+def _last_fill_by_ticker(api_keys: dict | None, tickers: list[str]) -> dict[str, dict]:
+    """For each ticker, return the most recent *filled* Alpaca paper order
+    as ``{ticker: {filled_at: ISO, filled_avg_price: float, side: str}}``.
+
+    Used by the trade-tick skip predicate to ask "was the last fill recent
+    enough + close enough to current price that re-deciding wouldn't add
+    information?". Source of truth = Alpaca, not the PM's intended action
+    in the wiki, because what *actually* filled is what mattered (a market
+    order can be partial-fill-then-cancel).
+
+    Fail-open: any error → empty dict → predicate skips throttling for
+    everyone → PM behaves as before.
+    """
+    if not api_keys or not tickers:
+        return {}
+    try:
+        from app.backend.services import alpaca_paper
+        orders = alpaca_paper.get_orders(api_keys, status="all", limit=200) or []
+    except Exception:
+        return {}
+    by_ticker: dict[str, dict] = {}
+    want = {t.upper() for t in tickers}
+    for o in orders:
+        sym = str(o.get("symbol") or "").upper()
+        if sym not in want or not o.get("filled_at"):
+            continue
+        if by_ticker.get(sym):
+            continue  # /orders returns newest-first
+        try:
+            price = float(o.get("filled_avg_price") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        by_ticker[sym] = {
+            "filled_at": o.get("filled_at"),
+            "filled_avg_price": price,
+            "side": (o.get("side") or "").lower(),
+        }
+    return by_ticker
+
+
+def _should_skip_ticker(
+    ticker: str,
+    *,
+    current_price: float,
+    last_fill: dict | None,
+    strategy: dict | None,
+    portfolio: dict | None,
+) -> tuple[bool, str]:
+    """The trade-tick skip predicate. Returns ``(skip, reason)``.
+
+    Re-decide if ANY of these is true (i.e. ``skip=False``):
+      • no last fill on record (PM hasn't traded this ticker yet)
+      • Min decision interval has elapsed
+      • Price moved more than ``price_move_threshold_pct`` vs fill
+      • Stop-loss or take-profit threshold crossed (vs avg entry price
+        from the portfolio, falling back to fill price)
+
+    When ``skip=True``, the PM caller pre-fills "hold (throttled)" and
+    drops the ticker from the LLM batch — exactly the cost saving that
+    makes a 5-min cadence affordable.
+    """
+    if not isinstance(strategy, dict):
+        return False, "no strategy"
+    if last_fill is None:
+        return False, "no prior fill — let PM decide fresh"
+
+    # Time check
+    min_interval_min = strategy.get("min_decision_interval_minutes")
+    try:
+        min_interval = float(min_interval_min) if min_interval_min is not None else 0.0
+    except (TypeError, ValueError):
+        min_interval = 0.0
+    interval_ok_to_skip = False
+    if min_interval > 0:
+        try:
+            from datetime import datetime as _dt
+            filled_at = _dt.fromisoformat(str(last_fill.get("filled_at")).replace("Z", "+00:00"))
+            now = _dt.now(filled_at.tzinfo) if filled_at.tzinfo else _dt.utcnow()
+            mins_since = (now - filled_at).total_seconds() / 60.0
+            interval_ok_to_skip = mins_since < min_interval
+        except Exception:
+            interval_ok_to_skip = False
+    else:
+        interval_ok_to_skip = False  # 0 = always re-decide
+
+    # Price-move check
+    fill_price = float(last_fill.get("filled_avg_price") or 0.0)
+    move_pct = (
+        abs(current_price - fill_price) / fill_price * 100.0
+        if fill_price > 0 and current_price > 0 else 0.0
+    )
+    move_threshold = strategy.get("price_move_threshold_pct")
+    try:
+        move_threshold = float(move_threshold) if move_threshold is not None else 0.0
+    except (TypeError, ValueError):
+        move_threshold = 0.0
+    price_change_forces_redecide = move_threshold > 0 and move_pct >= move_threshold
+
+    # Stop / take-profit check against actual avg entry (portfolio first; fill price fallback)
+    position = ((portfolio or {}).get("positions") or {}).get(ticker, {}) or {}
+    long_q = float(position.get("long") or 0)
+    short_q = float(position.get("short") or 0)
+    avg_long = float(position.get("long_cost_basis") or 0) or fill_price
+    avg_short = float(position.get("short_cost_basis") or 0) or fill_price
+    stop_pct = strategy.get("stop_loss_pct")
+    tp_pct = strategy.get("take_profit_pct")
+    try:
+        stop_pct = float(stop_pct) if stop_pct is not None else None
+        tp_pct = float(tp_pct) if tp_pct is not None else None
+    except (TypeError, ValueError):
+        stop_pct, tp_pct = None, None
+    stop_or_target_hit = False
+    if long_q > 0 and avg_long > 0:
+        ret = (current_price - avg_long) / avg_long * 100.0
+        if stop_pct is not None and ret <= -stop_pct:
+            stop_or_target_hit = True
+        if tp_pct is not None and ret >= tp_pct:
+            stop_or_target_hit = True
+    if short_q > 0 and avg_short > 0:
+        ret = (avg_short - current_price) / avg_short * 100.0  # short P&L direction
+        if stop_pct is not None and ret <= -stop_pct:
+            stop_or_target_hit = True
+        if tp_pct is not None and ret >= tp_pct:
+            stop_or_target_hit = True
+
+    if price_change_forces_redecide:
+        return False, f"price move {move_pct:.2f}% ≥ threshold {move_threshold}%"
+    if stop_or_target_hit:
+        return False, "stop or take-profit hit"
+    if interval_ok_to_skip:
+        return True, f"last fill {mins_since:.0f}m ago < min interval {min_interval:.0f}m"
+    return False, "no reason to skip"
+
+
+def _signal_ages(analyst_signals: dict, *, today: str | None = None) -> dict[tuple[str, str], float]:
+    """Compute per-(agent, ticker) signal age in hours, derived from each
+    cached signal's ``date`` field (set by ``read_latest_signals(..., with_date=True)``).
+
+    Daily-granularity — wiki insights are stamped per analysis day, not per
+    second. For the decoupled trade-tick loop a day-level resolution is
+    plenty: the question we want to answer is "is Buffett's view from this
+    morning, or 8 days ago?", not "is it from 09:00 or 09:05".
+
+    ``today`` is the run's as-of date (``state['data']['end_date']``).
+    Falling back to ``date.today().isoformat()`` keeps the function usable
+    from tests that don't pass a state.
+    """
+    from datetime import date as _date
+
+    if today is None:
+        today = _date.today().isoformat()
+    try:
+        today_d = _date.fromisoformat(today)
+    except Exception:
+        today_d = _date.today()
+
+    ages: dict[tuple[str, str], float] = {}
+    for agent_id, by_ticker in (analyst_signals or {}).items():
+        if not isinstance(by_ticker, dict) or agent_id.startswith("risk_management_agent"):
+            continue
+        for ticker, entry in by_ticker.items():
+            if not isinstance(entry, dict):
+                continue
+            date_str = entry.get("date")
+            if not isinstance(date_str, str):
+                continue
+            try:
+                d = _date.fromisoformat(date_str)
+            except Exception:
+                continue
+            ages[(str(agent_id), str(ticker))] = max(0.0, (today_d - d).days * 24.0)
+    return ages
+
+
+def _render_signal_age_block(ages: dict[tuple[str, str], float], tickers_for_llm: list[str]) -> str:
+    """Format per-ticker signal-age as a compact Markdown block for the PM.
+
+    Rendered above the Signals JSON when ``ages`` is non-empty (= we're in a
+    decoupled trade-tick replay run; live runs have age=0 hours and skip this
+    block via the ``ages or {}`` check at the call site).
+
+    Format keeps it scannable: one row per ticker, max-age across analysts,
+    so the PM doesn't have to scan a 9×N table. The PM's job is "should I
+    weigh these signals less because they're old?", not "trace which one is
+    oldest".
+    """
+    if not ages or not tickers_for_llm:
+        return ""
+    per_ticker_max: dict[str, float] = {}
+    for (_agent, t), hrs in ages.items():
+        if t not in tickers_for_llm:
+            continue
+        if per_ticker_max.get(t, -1.0) < hrs:
+            per_ticker_max[t] = hrs
+    if not per_ticker_max:
+        return ""
+    lines = [
+        "## Signal Age",
+        "",
+        "Max age of the cached analyst signals you're being asked to act on. "
+        "These were written on prior analyst runs and are being replayed; price "
+        "data underneath is fresh. Weigh stale signals less when they conflict "
+        "with what current price action suggests.",
+        "",
+        "| Ticker | Max signal age |",
+        "|---|---:|",
+    ]
+    for t in tickers_for_llm:
+        hrs = per_ticker_max.get(t)
+        if hrs is None:
+            lines.append(f"| {t} | (fresh) |")
+        elif hrs < 24:
+            lines.append(f"| {t} | {hrs:.0f} h |")
+        else:
+            lines.append(f"| {t} | {hrs/24.0:.1f} d |")
+    lines.append("")
     return "\n".join(lines)
 
 

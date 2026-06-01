@@ -15,7 +15,7 @@ from app.backend.routes import api_router
 from app.backend.database.connection import engine
 from app.backend.database.models import Base
 from app.backend.services.ollama_service import ollama_service
-from app.backend.services import research_scheduler
+from app.backend.services import research_scheduler, trade_scheduler
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -32,14 +32,19 @@ async def lifespan(app: FastAPI):
     from src.utils.llm_cache import init_llm_cache
     init_llm_cache()
     await _check_ollama()
-    scheduler_task = None
+    scheduler_tasks: list[asyncio.Task] = []
     if research_scheduler.is_enabled():
-        scheduler_task = asyncio.create_task(research_scheduler.scheduler_loop())
+        scheduler_tasks.append(asyncio.create_task(research_scheduler.scheduler_loop()))
+    # Decoupled trade-tick scheduler — fires PM-only ticks on the cadence
+    # set by each flow's Trading Account node. Independent of the analyst
+    # refresh loop above; see app/backend/services/trade_scheduler.py.
+    if trade_scheduler.is_enabled():
+        scheduler_tasks.append(asyncio.create_task(trade_scheduler.scheduler_loop()))
     yield
-    if scheduler_task:
-        scheduler_task.cancel()
+    for t in scheduler_tasks:
+        t.cancel()
         try:
-            await scheduler_task
+            await t
         except asyncio.CancelledError:
             pass
 

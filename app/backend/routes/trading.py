@@ -46,6 +46,21 @@ async def paper_portfolio_history(
     return alpaca_paper.get_portfolio_history(api_keys, period=period, timeframe=timeframe)
 
 
+@router.post("/tick/{flow_id}")
+async def fire_trade_tick(flow_id: int, db: Session = Depends(get_db)):
+    """Manual trade tick — bypasses the market-hour gate for testing.
+
+    The scheduled loop still enforces market hours; this route exists so
+    the user can validate the decoupled trade-tick path without waiting
+    for the next 09:30 ET, and so a "fire now" button on the UI is easy
+    to add later. The Trading Account's ``tradeSchedule`` must still be
+    set (≠ off) and the daily cap is enforced — a manual click can't run
+    away. Auto-trade gating (``autoTrade``) controls whether decisions
+    actually hit Alpaca."""
+    from app.backend.services.trade_executor import execute_trade_tick
+    return await execute_trade_tick(flow_id, db, manual=True)
+
+
 @router.post("/paper/reset")
 async def paper_reset(db: Session = Depends(get_db)):
     """Reset the paper account back to its $100,000 starting balance.

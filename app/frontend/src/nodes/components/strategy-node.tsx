@@ -130,6 +130,14 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
   // so leaving it on adds prompt noise for nothing.
   const [allowEtfs, setAllowEtfs] = useNodeState<boolean>(id, 'allowEtfs', false);
   const [note, setNote] = useNodeState<string>(id, 'note', '');
+  // Decoupled trade-tick throttles. Without these, an `hourly`-or-faster
+  // tradeSchedule on the Trading Account would re-fire the PM on every
+  // tick whether anything material has changed or not. The PM skip
+  // predicate (see src/agents/portfolio_manager.py:_should_skip_ticker)
+  // reads these to drop tickers that aren't worth a fresh LLM call.
+  const [minDecisionIntervalMinutes, setMinDecisionIntervalMinutes] = useNodeState<string>(id, 'minDecisionIntervalMinutes', '30');
+  const [priceMoveThresholdPct, setPriceMoveThresholdPct] = useNodeState<string>(id, 'priceMoveThresholdPct', '1');
+  const [maxSignalAgeHours, setMaxSignalAgeHours] = useNodeState<string>(id, 'maxSignalAgeHours', '168');
 
   // Replay-strategy wiring: re-run the PM on cached analyst signals from the
   // flow's wiki without re-running analysts (no LLM analyst calls, no theme
@@ -280,6 +288,10 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
     allow_options: !!allowOptions,
     allow_etfs: !!allowEtfs,
     note: note || undefined,
+    // Decoupled trade-tick throttles — read by the PM skip predicate.
+    min_decision_interval_minutes: parseNum(minDecisionIntervalMinutes),
+    price_move_threshold_pct: parseNum(priceMoveThresholdPct),
+    max_signal_age_hours: parseNum(maxSignalAgeHours),
   });
 
   // Read the optional Risk Manager node's config from the canvas. None on the
@@ -721,6 +733,85 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
                     className={NUM_CLS} value={takeProfitPct}
                     onChange={(e) => setTakeProfitPct(e.target.value.replace(/[^0-9.]/g, ''))}
                   />
+                </div>
+              </div>
+
+              {/* Decoupled trade-tick throttles — only meaningful when the
+                  Trading Account's tradeSchedule != off. The PM skip predicate
+                  uses these to drop tickers that aren't worth a fresh LLM call:
+                  PM re-fires only if at least one of (time since last trade
+                  exceeds min interval) / (price moved more than threshold) /
+                  (stop or take-profit crossed) is true. */}
+              <div className="flex flex-col gap-1">
+                <Tooltip delayDuration={200}>
+                  <TooltipTrigger asChild>
+                    <div className="text-subtitle text-primary">Trade-tick throttle</div>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="max-w-xs">
+                    Limits how often the PM re-decides per ticker on decoupled
+                    trade ticks. Each tick drops tickers that haven't moved
+                    materially and aren't at a stop/target — keeps LLM cost
+                    under control at 5-min cadence. No-op when Trade Schedule
+                    is off.
+                  </TooltipContent>
+                </Tooltip>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="flex flex-col gap-1">
+                    <Tooltip delayDuration={200}>
+                      <TooltipTrigger asChild>
+                        <div className="text-xs text-muted-foreground">Min interval (min)</div>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="max-w-xs">
+                        Don't re-decide on a ticker if its last fill is more recent
+                        than this many minutes (unless price moved past the threshold).
+                      </TooltipContent>
+                    </Tooltip>
+                    <input
+                      type="number" min={0} max={1440} step={5}
+                      aria-label="Minimum decision interval in minutes"
+                      className={NUM_CLS}
+                      value={minDecisionIntervalMinutes}
+                      onChange={(e) => setMinDecisionIntervalMinutes(e.target.value.replace(/[^0-9]/g, ''))}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <Tooltip delayDuration={200}>
+                      <TooltipTrigger asChild>
+                        <div className="text-xs text-muted-foreground">Price move (%)</div>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="max-w-xs">
+                        If price moved more than this since the last fill, PM
+                        re-decides even inside the min-interval window.
+                      </TooltipContent>
+                    </Tooltip>
+                    <input
+                      type="number" min={0} max={50} step={0.5}
+                      aria-label="Price move threshold percent"
+                      className={NUM_CLS}
+                      value={priceMoveThresholdPct}
+                      onChange={(e) => setPriceMoveThresholdPct(e.target.value.replace(/[^0-9.]/g, ''))}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <Tooltip delayDuration={200}>
+                      <TooltipTrigger asChild>
+                        <div className="text-xs text-muted-foreground">Max signal age (h)</div>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="max-w-xs">
+                        Bail out (all-hold) when the average age of cached analyst
+                        signals exceeds this many hours. Default 168 = 7 days, so
+                        a `weekly` analyst schedule isn't blocked. Lower it for
+                        more cautious trading on stale theses.
+                      </TooltipContent>
+                    </Tooltip>
+                    <input
+                      type="number" min={1} max={720} step={1}
+                      aria-label="Max signal age in hours"
+                      className={NUM_CLS}
+                      value={maxSignalAgeHours}
+                      onChange={(e) => setMaxSignalAgeHours(e.target.value.replace(/[^0-9]/g, ''))}
+                    />
+                  </div>
                 </div>
               </div>
 

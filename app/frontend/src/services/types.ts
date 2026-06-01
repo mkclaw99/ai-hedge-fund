@@ -69,6 +69,10 @@ export interface HedgeFundRequest extends BaseHedgeFundRequest {
   strategy?: StrategyConfig;    // Strategy node config — style, sizing, caps, instruments, mandate
   skip_analysts?: boolean;      // Replay strategy on cached signals (no analyst re-run, no theme resolve)
   risk_manager?: RiskManagerConfig; // Risk Manager node — vol/correlation cap overrides
+  // Decoupled trade-tick — owned by the Trading Account node, carried across
+  // so the run executor knows it's a slim PM-only replay with fresh prices.
+  trade_schedule?: 'off' | '5min' | '15min' | 'hourly';
+  refresh_prices?: boolean;
 }
 
 export interface RiskManagerConfig {
@@ -89,6 +93,10 @@ export interface StrategyConfig {
   allow_options?: boolean;
   allow_etfs?: boolean;
   note?: string;              // free-text mandate
+  // Decoupled trade-tick throttles (read by the PM skip predicate).
+  min_decision_interval_minutes?: number;
+  price_move_threshold_pct?: number;
+  max_signal_age_hours?: number;
 }
 
 export interface BacktestRequest extends BaseHedgeFundRequest {

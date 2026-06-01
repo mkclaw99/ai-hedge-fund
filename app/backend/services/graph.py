@@ -230,13 +230,32 @@ def run_graph(
     if skip_analysts and root is not None:
         try:
             from src.memory import read_latest_signals as _rls
-            seeded_signals = _rls(tickers, root=root) or {}
+            # `with_date=True` carries each signal's analysis date through to the
+            # PM so the Signal Age block can render. Non-trade replays (Strategy
+            # node's old "Replay" button) tolerate the extra `date` key — it's
+            # additive on the entry dict, ignored by paths that don't read it.
+            seeded_signals = _rls(tickers, root=root, with_date=True) or {}
             for agent_id, per_ticker in seeded_signals.items():
                 for t in per_ticker.keys():
                     seen_signals.add((str(agent_id), str(t)))
         except Exception as e:
             logger.warning("replay-strategy: signal hydration failed (%s); PM will see empty signals", e)
             seeded_signals = {}
+
+    # Decoupled trade tick: drop cached price entries so the next get_prices
+    # call this run actually re-fetches today's bar from the provider chain.
+    # Without this, an `hourly` tick fires at 11:00 ET and the RM still sees
+    # yesterday's close as "now". Cheap — just removes the per-ticker bucket
+    # for the tickers in scope; everyone else's cache is untouched.
+    if request is not None and getattr(request, "refresh_prices", False):
+        try:
+            from src.data.cache import get_cache as _get_cache
+            _cache = _get_cache()
+            for _t in tickers:
+                _cache.evict_prices(_t)
+            logger.info("trade tick: evicted %d ticker(s) from price cache", len(tickers))
+        except Exception as exc:
+            logger.warning("trade tick: price cache eviction failed (%s); continuing with cached values", exc)
 
     inputs = {
         "messages": [
