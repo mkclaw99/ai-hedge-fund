@@ -295,6 +295,13 @@ def generate_trading_decision(
     # empty block is rendered and the PM uses default behaviour (back-compat).
     strategy_block = _render_strategy_block(strategy)
 
+    # Forecast Mandate — the Time Series Forecaster's full predictive
+    # distribution per ticker (horizon, frequency, q10/q50/q90 endpoint,
+    # fan width, rule). Without this block the PM would see Chronos as
+    # nothing but a sig/conf vote, blind to the horizon mismatch with the
+    # Strategy's holding period. Empty when no forecaster ran.
+    forecast_block = _render_forecast_block(analyst_signals, tickers_for_llm)
+
     # Derivatives — when the Strategy node enables options, fetch a compact
     # per-ticker options summary from Alpaca and inject it. Fail-open: any
     # data problem renders a one-line "no derivatives" note.
@@ -364,6 +371,11 @@ def generate_trading_decision(
                 "weigh it, but the current signals take precedence.\n"
                 "If a `## Strategy Mandate` block is present, follow it: it sets your trading style, "
                 "sizing rule, caps, holding period, and which instruments you may consider.\n"
+                "If a `## Forecast Mandate (Chronos-2)` block is present, it shows the Time Series "
+                "Forecaster's full predictive distribution per ticker (horizon, q10/q50/q90, fan width). "
+                "Read it together with the Strategy Mandate: a forecaster horizon much shorter than your "
+                "holding period means the directional call is entry-timing, not thesis. A wide fan means "
+                "low precision regardless of `sig`.\n"
                 "If a `## Mandatory Adjustments Based on Past Performance` block is present, those "
                 "rules were derived MECHANICALLY from the (analyst, ticker) cells where the "
                 "historical pattern is unambiguous. Follow them. They override your usual instinct "
@@ -388,7 +400,7 @@ def generate_trading_decision(
                 "Signals:\n{signals}\n\n"
                 "Allowed:\n{allowed}\n\n"
                 "Prior research:\n{prior}\n\n"
-                "{strategy}{derivatives}{rules}{track_record}"
+                "{strategy}{forecast}{derivatives}{rules}{track_record}"
                 "Format:\n"
                 "{{\n"
                 '  "decisions": {{\n'
@@ -404,6 +416,7 @@ def generate_trading_decision(
         "allowed": json.dumps(compact_allowed, separators=(",", ":"), ensure_ascii=False),
         "prior": prior or "(none on record)",
         "strategy": strategy_block,
+        "forecast": forecast_block,
         "derivatives": derivatives_block,
         "rules": rules_block + ("\n" if rules_block else ""),
         "track_record": track_record_block,
@@ -475,6 +488,129 @@ def _render_strategy_block(strategy):
         bits.append(f"> {note}")
     bits.append("")
     return "\n".join(bits)
+
+
+def _human_horizon(n_bars: int, frequency: str) -> str:
+    """Translate a bar count + bar frequency into a reader-friendly horizon
+    (e.g. ``288 × '5min' → '~ 1 trading day (24 h wall-clock)'``).
+
+    The PM uses this in the Forecast Mandate banner so it can compare the
+    forecaster's horizon to the Strategy node's holding period without doing
+    the unit conversion itself — a `position`-period mandate next to a 24 h
+    Chronos forecast is a real mismatch the LLM should weigh.
+    """
+    try:
+        n = int(n_bars)
+    except Exception:
+        return f"{n_bars} bars"
+    if n <= 0:
+        return "0 bars"
+    f = (frequency or "day").lower()
+    if f == "day":
+        return f"~ {n} trading day{'s' if n != 1 else ''}"
+    if f == "hour":
+        days = n / 6.5  # ~6.5 trading hours/day
+        return f"~ {n} hour{'s' if n != 1 else ''} (~ {days:.1f} trading day{'s' if days != 1 else ''})"
+    if f == "5min":
+        mins = n * 5
+        days = mins / 60.0 / 6.5
+        return f"~ {mins} minutes (~ {days:.2f} trading day{'s' if days != 1 else ''})"
+    if f == "1min":
+        days = n / 60.0 / 6.5
+        return f"~ {n} minute{'s' if n != 1 else ''} (~ {days:.2f} trading day{'s' if days != 1 else ''})"
+    return f"{n} × '{f}'"
+
+
+def _render_forecast_block(analyst_signals: dict, tickers_for_llm: list[str]) -> str:
+    """Format the Time Series Forecaster's full predictive distribution into
+    a `## Forecast Mandate` Markdown block for the PM prompt.
+
+    Today the PM sees forecaster output as just another ``{sig, conf}`` vote
+    in the Signals JSON — the q10/q50/q90 endpoint, the fan width, the
+    horizon, the bar frequency, all of that gets dropped before the prompt
+    is built. This block puts it back, so the PM can:
+
+      * compare the forecaster's horizon to the Strategy node's holding
+        period (mismatch → entry-timing hint, not thesis);
+      * see *how* directional the call is (drift) AND *how confident*
+        (fan width) without conflating both into a single 0-100 number;
+      * spot tickers where the forecaster disagrees with the persona
+        analysts but the fan is very narrow (= trust the model more).
+
+    Returns ``""`` when no forecaster ran in this flow.
+    """
+    # Find every analyst signal entry that carries a `forecast` payload
+    # (preserved in forecaster.py before the reasoning swap). One row per
+    # ticker; multiple forecaster instances in a flow would each contribute.
+    rows: list[tuple[str, str, dict]] = []  # (agent_id, ticker, payload)
+    horizon_bars: int | None = None
+    frequency: str | None = None
+    for agent_id, by_ticker in (analyst_signals or {}).items():
+        if not isinstance(by_ticker, dict):
+            continue
+        for t in tickers_for_llm:
+            entry = by_ticker.get(t)
+            if not isinstance(entry, dict):
+                continue
+            payload = entry.get("forecast")
+            if not isinstance(payload, dict):
+                continue
+            if "forecast_end" not in payload:  # error rows skipped (e.g. non-positive close)
+                continue
+            rows.append((agent_id, t, payload))
+            if horizon_bars is None:
+                horizon_bars = payload.get("horizon_days")
+                frequency = payload.get("frequency", "day")
+    if not rows:
+        return ""
+
+    horizon_phrase = _human_horizon(horizon_bars or 0, frequency or "day")
+    # `_human_horizon` already adds its own "~" prefix and parens; weld with
+    # an em-dash so the rendered line reads cleanly without nested parens.
+    bars_label = f"**{horizon_bars}-bar horizon** — {horizon_phrase}" if horizon_bars else "(horizon unspecified)"
+    freq_label = f"**{frequency or 'day'}** bars"
+
+    lines = [
+        "## Forecast Mandate (Chronos-2)",
+        "",
+        f"The Time Series Forecaster ran on {freq_label} over a {bars_label}. "
+        "Per-ticker end-of-horizon distribution — figures are % vs current price:",
+        "",
+        "| Ticker | Last | q10 | q50 | q90 | Fan width | Rule |",
+        "|---|---:|---:|---:|---:|---:|---|",
+    ]
+    for _agent, ticker, p in rows:
+        last = p.get("last_close")
+        fc = p.get("forecast_end", {}) or {}
+        pct = p.get("pct_change", {}) or {}
+        q10_pct = pct.get("q10")
+        q50_pct = pct.get("q50")
+        q90_pct = pct.get("q90")
+        # Fan width as % of current price — same metric used to colour the
+        # chart, so PM and UI agree on "is this prediction precise or wide".
+        try:
+            fan_w = (float(fc.get("q90", 0)) - float(fc.get("q10", 0))) / max(float(last or 0), 1e-9) * 100.0
+            fan_str = f"{fan_w:.1f}%"
+        except Exception:
+            fan_str = "n/a"
+        rule = p.get("rule", "")
+        last_str = f"${float(last):.2f}" if isinstance(last, (int, float)) else "n/a"
+        def _pct(x):
+            return f"{x:+.2f}%" if isinstance(x, (int, float)) else "n/a"
+        lines.append(
+            f"| {ticker} | {last_str} | {_pct(q10_pct)} | {_pct(q50_pct)} | {_pct(q90_pct)} | {fan_str} | {rule} |"
+        )
+
+    lines.extend([
+        "",
+        "**Reading this block:**",
+        "- `q10`/`q90` are the 80% prediction interval; a tight fan = high precision.",
+        "- The forecaster's `sig`/`conf` in the Signals JSON above is derived from the same row.",
+        "- If the horizon here is much shorter than your **holding period**, treat the directional "
+        "call as **entry timing**, not a thesis — a 24 h Chronos forecast can't justify a months-long position.",
+        "",
+    ])
+    return "\n".join(lines)
 
 
 def _render_derivatives_block(strategy, tickers, state):
