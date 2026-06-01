@@ -190,6 +190,23 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     # entry → model default. Ignored on non-Google models.
     agent_thinking_budgets: Optional[Dict[str, str]] = None
 
+    def get_start_date(self) -> str:
+        """Resolve the effective start_date for this run.
+
+        The frontend often omits start_date — agents that need a price
+        window (Risk Manager, technicals, …) would otherwise see ``None``
+        and FD would return zero bars. Default to 90 trading-days back
+        from ``end_date``, matching the legacy CLI behaviour.
+
+        Lives on this class (not on ``ForecasterRefreshRequest``, which
+        has no ``start_date`` field) — that's where ``hedge_fund.py``
+        calls it from.
+        """
+        if self.start_date:
+            return self.start_date
+        end = self.end_date or datetime.now().strftime("%Y-%m-%d")
+        return (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=90)).strftime("%Y-%m-%d")
+
 
 class ForecasterRefreshRequest(BaseModel):
     """POST body for ``/forecaster/refresh`` — re-run the Time Series
@@ -224,12 +241,6 @@ class ForecasterRefreshRequest(BaseModel):
     # Strategy params. The frontend sends a slimmed `graph_nodes` (just the PM) and
     # the explicit ticker universe — no theme/research re-run, no LLM analyst calls.
     skip_analysts: Optional[bool] = False
-
-    def get_start_date(self) -> str:
-        """Calculate start date if not provided"""
-        if self.start_date:
-            return self.start_date
-        return (datetime.strptime(self.end_date, "%Y-%m-%d") - timedelta(days=90)).strftime("%Y-%m-%d")
 
 
 # Flow-related schemas
