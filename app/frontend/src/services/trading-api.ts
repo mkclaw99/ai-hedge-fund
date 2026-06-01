@@ -104,3 +104,17 @@ export async function getPortfolioHistory(period: PortfolioHistoryPeriod = '1M')
     return { connected: false, paper: true, reason: e?.message || 'fetch failed', period, timeframe: '1D', samples: [] };
   }
 }
+
+// Destructive: hits Alpaca's paper-only /v2/account/actions/reset, which
+// wipes positions, cancels open orders, and resets cash + equity to $100k.
+// The user must confirm in the UI before this is called.
+export interface PaperResetResult { ok: boolean; reason?: string }
+export async function resetPaperAccount(): Promise<PaperResetResult> {
+  try {
+    const r = await fetch(`${API_BASE_URL}/trading/paper/reset`, { method: 'POST' });
+    if (!r.ok) return { ok: false, reason: `HTTP ${r.status}` };
+    return (await r.json()) as PaperResetResult;
+  } catch (e: any) {
+    return { ok: false, reason: e?.message || 'fetch failed' };
+  }
+}

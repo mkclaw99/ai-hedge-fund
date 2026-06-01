@@ -44,3 +44,15 @@ async def paper_portfolio_history(
     count stays under a few hundred and the inline SVG chart is cheap."""
     api_keys = ApiKeyService(db).get_api_keys_dict()
     return alpaca_paper.get_portfolio_history(api_keys, period=period, timeframe=timeframe)
+
+
+@router.post("/paper/reset")
+async def paper_reset(db: Session = Depends(get_db)):
+    """Reset the paper account back to its $100,000 starting balance.
+
+    Destructive: wipes positions, cancels open orders, restores cash and
+    equity. Same as clicking Reset on Alpaca's dashboard. Gated by the
+    paper credentials being set; nothing here can hit a live account
+    (alpaca_paper hard-codes the paper host). Returns ``{ok, reason?}``."""
+    api_keys = ApiKeyService(db).get_api_keys_dict()
+    return alpaca_paper.reset_account(api_keys)
