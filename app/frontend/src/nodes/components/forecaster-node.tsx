@@ -605,6 +605,18 @@ interface DetailDialogProps {
 
 function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onTickerChange, forecastsByTicker, controls }: DetailDialogProps) {
   const forecast = activeTicker ? forecastsByTicker[activeTicker] : null;
+  // Stale-chart detection: the chart's axes + cell labels reflect whatever
+  // the LAST RUN produced (frequency, prediction_len). If the user has since
+  // changed those settings in the dropdowns above, the chart is out of date
+  // — and there's no way to tell visually, because the labels still say
+  // whatever the prior run was. Surface this gap explicitly so the user knows
+  // a Refresh is needed. Context length isn't compared: yfinance hard-caps
+  // intraday history (1-min ≤ 7d, 5-min ≤ 60d), so returned-bar-count never
+  // matches requested-bar-count one-to-one and would false-positive.
+  const isStale = forecast
+    ? ((forecast.frequency ?? 'day') !== controls.barFrequency)
+      || (forecast.horizon_days !== controls.predictionLen)
+    : false;
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
       <DialogContent
@@ -621,6 +633,14 @@ function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onT
           </DialogTitle>
         </DialogHeader>
         <DialogChronosSettings controls={controls} />
+        {isStale && forecast && (
+          <StaleChartBanner
+            currentFreq={controls.barFrequency}
+            currentPred={controls.predictionLen}
+            chartFreq={(forecast.frequency ?? 'day') as BarFrequency}
+            chartPred={forecast.horizon_days}
+          />
+        )}
         {forecast ? (
           <DetailBody forecast={forecast} tickers={tickers} activeTicker={activeTicker} onTickerChange={onTickerChange} />
         ) : (
@@ -628,6 +648,36 @@ function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onT
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+// Inline banner shown above the chart when the user's Settings have drifted
+// from the run that produced the chart. The chart x-axis ticks and "N-d Q10"
+// metric cells reflect *forecast.frequency* and *forecast.horizon_days* — not
+// the dropdowns above. Without this, picking "1-Minute" in the dropdown
+// silently leaves the chart on its previous Daily axes and the user sees
+// inconsistent labels with no signal that a Refresh is needed.
+function StaleChartBanner({
+  currentFreq, currentPred, chartFreq, chartPred,
+}: {
+  currentFreq: BarFrequency;
+  currentPred: number;
+  chartFreq: BarFrequency;
+  chartPred: number;
+}) {
+  const freqLabel = (f: BarFrequency) => FREQ_OPTIONS.find((o) => o.value === f)?.label ?? f;
+  return (
+    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-500 flex items-start gap-2">
+      <span aria-hidden>⚠</span>
+      <span>
+        <span className="font-medium">Chart is stale.</span>{' '}
+        Settings show <span className="font-medium">{freqLabel(currentFreq)}</span> ·{' '}
+        <span className="font-medium">{currentPred}</span> prediction bars, but the chart was rendered from{' '}
+        <span className="font-medium">{freqLabel(chartFreq)}</span> ·{' '}
+        <span className="font-medium">{chartPred}</span>. Click{' '}
+        <span className="font-medium">Refresh forecast</span> to regenerate with the current settings.
+      </span>
+    </div>
   );
 }
 

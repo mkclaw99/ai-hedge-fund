@@ -187,7 +187,11 @@ function ThinkingBudgetField({ id }: { id: string }) {
       <select
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        className="w-full rounded border border-border bg-node/60 px-2 py-1 text-xs text-foreground focus:outline-none focus:border-primary/50"
+        // `nodrag` is React Flow's marker for "don't propagate this pointer
+        // event as a node-drag" — without it, opening the dropdown grabs the
+        // node and slides it across the canvas. Every other control in this
+        // codebase has it; this one was missed when the field was added.
+        className="nodrag w-full rounded border border-border bg-node/60 px-2 py-1 text-xs text-foreground focus:outline-none focus:border-primary/50"
       >
         {THINKING_OPTIONS.map((o) => (
           <option key={o.value} value={o.value}>{o.label}</option>
