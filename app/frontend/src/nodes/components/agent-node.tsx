@@ -8,7 +8,7 @@ import { ModelSelector } from '@/components/ui/llm-selector';
 import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
 import { getDefaultModel, getModels, LanguageModel } from '@/data/models';
-import { addStateChangeListener, getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
+import { getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
 import { cn } from '@/lib/utils';
 import { type AgentNode } from '../types';
 import { getStatusColor } from '../utils';
@@ -37,38 +37,35 @@ export function AgentNode({
   const isInProgress = status === 'IN_PROGRESS';
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   
-  // Use persistent state hooks
-  const [availableModels, setAvailableModels] = useNodeState<LanguageModel[]>(id, 'availableModels', []);
+  // Selected model — persisted per node so the user's pick survives reload.
+  // The model *list* is NOT persisted (see below).
   const [selectedModel, setSelectedModel] = useNodeState<LanguageModel | null>(id, 'selectedModel', null);
+  // Available model list — plain useState. Was previously useNodeState, but
+  // that was a category error: the list is identical for every node in every
+  // flow (just whatever the backend returns from /language-models/). Per-node
+  // persistence (a) bloated the DB with 13 dup'd model entries per agent node,
+  // and (b) created a stuck-empty failure mode — if the first mount ever
+  // persisted `[]` to flowStateManager → DB → next reload restored `[]` and
+  // the dropdown showed "No model found" forever. Plain useState eliminates
+  // both. The list re-fetches on every node mount (cheap; getModels memoises
+  // module-wide after the first call, so subsequent mounts resolve from cache).
+  const [availableModels, setAvailableModels] = useState<LanguageModel[]>([]);
 
-  // Load models on mount; auto-seed the system default on a brand-new node
-  // so "Auto" doesn't resolve to OpenAI and 401 the run.
+  // Auto-seed the system default on a brand-new node so "Auto" doesn't
+  // resolve to OpenAI and 401 the run.
   //
-  // The hard problem: distinguish "fresh node, no saved choice" from "saved
-  // node, rehydrate hasn't landed yet". Both look identical at mount time
-  // (flowStateManager has no entry for our nodeId). PR #106 tried to wait
-  // via `await Promise.all([getModels(), getDefaultModel()])` as a delay
-  // heuristic — but those fetches are memoised after first call, so on a
-  // subsequent flow load they resolve from cache in microseconds, far
-  // before loadFlow has finished its synchronous setNodeInternalState chain.
-  // Result: we still see "undefined", still write the default, still stomp
-  // the user's saved pick. User reported this repeatedly with !!! and rightly.
+  // The hard problem (post-PR-#108): useNodeState's init effect writes the
+  // default value (null) into flowStateManager on mount. So by the time
+  // loadModels resolves, `'selectedModel' in persisted` is ALWAYS TRUE for
+  // any mounted PM — the seeding branch never runs.
   //
-  // Real fix: subscribe to state-manager changes. If ANY state activity for
-  // this node lands before our timeout, we treat it as a rehydrate and bail
-  // out — leaving the saved value in place. If nothing lands in 1500ms, we
-  // declare it a fresh node and seed the default. 1500ms is generous: in
-  // practice loadFlow runs synchronously and the rehydrate fires within
-  // ~10ms; the long window is insurance against slow tab restoration.
+  // The correct freshness check is value-based: "selectedModel is falsy"
+  // means the user hasn't picked, regardless of whether the key has been
+  // written into the bag by useNodeState's bookkeeping. Saved picks come
+  // back as a `{model_name, provider, ...}` object (truthy) and bypass
+  // the seeding cleanly.
   useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let unsubscribe: (() => void) | undefined;
-
-    const isFreshNode = () => {
-      const persisted = getNodeInternalState(id);
-      return !persisted || !('selectedModel' in persisted);
-    };
 
     const loadModels = async () => {
       try {
@@ -76,34 +73,14 @@ export function AgentNode({
         if (cancelled) return;
         setAvailableModels(models);
         if (!defaultModel) return;
-        // Already rehydrated by the time we got here? Respect it.
-        if (!isFreshNode()) return;
-
-        // Wait for either a state-manager event that fills selectedModel
-        // for this node (= rehydrate landed) or a timeout (= node is
-        // genuinely fresh and we should seed the default).
-        await new Promise<void>((resolve) => {
-          let resolved = false;
-          const finish = () => {
-            if (resolved) return;
-            resolved = true;
-            if (timer) clearTimeout(timer);
-            unsubscribe?.();
-            resolve();
-          };
-          timer = setTimeout(finish, 1500);
-          unsubscribe = addStateChangeListener(() => {
-            if (!isFreshNode()) finish();
-          });
-        });
-        if (cancelled) return;
-
-        // Final check — if the state landed during the wait, isFreshNode is
-        // now false and we leave it alone. If still empty, this is a brand-
-        // new node and we seed.
-        if (isFreshNode()) {
-          setSelectedModel(defaultModel);
-        }
+        // Only seed when the persisted selectedModel is genuinely empty.
+        // Check the live persisted bag (not React state) so that a saved
+        // pick that arrived through setNodeInternalState during loadFlow
+        // is respected even if our local React state hasn't yet caught up
+        // via the subscriber chain.
+        const persisted = getNodeInternalState(id);
+        if (persisted && persisted.selectedModel) return;
+        setSelectedModel(defaultModel);
       } catch (error) {
         console.error('Failed to load models:', error);
       }
@@ -112,10 +89,8 @@ export function AgentNode({
 
     return () => {
       cancelled = true;
-      if (timer) clearTimeout(timer);
-      unsubscribe?.();
     };
-  }, [setAvailableModels, id]);
+  }, [id, setSelectedModel]);
 
   // Update the node context when the model changes
   useEffect(() => {
