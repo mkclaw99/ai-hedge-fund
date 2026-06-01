@@ -34,14 +34,16 @@ from pathlib import Path
 from src.memory.models import Insight, TickerContext, _slugify
 
 _TEMPLATE = Path(__file__).with_name("SCHEMA.template.md")
-_DEFAULT_DIR = "wiki"
 
 
 class WikiMemory:
     """A compounding markdown research wiki."""
 
     def __init__(self, root: str | os.PathLike | None = None) -> None:
-        root = root or os.environ.get("WIKI_MEMORY_DIR") or _DEFAULT_DIR
+        # Default path is computed via src.paths.wiki_base() — an absolute
+        # path anchored to the repo root, not to CWD. See src/paths.py.
+        from src.paths import wiki_base
+        root = root or os.environ.get("WIKI_MEMORY_DIR") or str(wiki_base())
         self.root = Path(root)
         self.sources = self.root / "sources"
         self.tickers = self.root / "tickers"

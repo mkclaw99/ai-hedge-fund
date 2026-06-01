@@ -33,9 +33,6 @@ from src.data.freshness import is_fresh
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DB = "cache/fd_cache.db"
-
-
 class SQLiteCache:
     """Durable key/value store for merged FD response rows.
 
@@ -45,7 +42,13 @@ class SQLiteCache:
     """
 
     def __init__(self, db_path: str | os.PathLike | None = None, *, ttl_seconds: int | None = None) -> None:
-        path = str(db_path or os.environ.get("FD_CACHE_DB") or _DEFAULT_DB)
+        # Default path is `<repo>/cache/fd_cache.db` via src.paths.cache_base —
+        # absolute, so the FD cache doesn't fragment across CWD-dependent stub
+        # directories when uvicorn is launched from `app/frontend` or anywhere
+        # other than the repo root. See src/paths.py.
+        from src.paths import cache_base
+        _default = str(cache_base() / "fd_cache.db")
+        path = str(db_path or os.environ.get("FD_CACHE_DB") or _default)
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Default TTL: permanent. Env override lets ops cap staleness globally.
