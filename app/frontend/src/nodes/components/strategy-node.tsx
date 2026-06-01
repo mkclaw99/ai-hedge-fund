@@ -160,6 +160,12 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
   const thirtyAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
   const [backtestStartDate, setBacktestStartDate] = useNodeState<string>(id, 'backtestStartDate', thirtyAgo);
   const [backtestEndDate, setBacktestEndDate] = useNodeState<string>(id, 'backtestEndDate', today);
+  // Per-day analyst lookback for the backtest. Default 252 calendar days
+  // (~178 trading days) covers Technicals' largest rolling window
+  // (`mom_6m` = 126 trading days). Lower it to make backtests cheaper if
+  // your flow has no Technicals + no RM, or to deliberately starve them
+  // for an apples-to-apples comparison against an older 30-day run.
+  const [backtestLookbackDays, setBacktestLookbackDays] = useNodeState<string>(id, 'backtestLookbackDays', '252');
   const [backtestError, setBacktestError] = useState<string | null>(null);
   const [trackRecordOpen, setTrackRecordOpen] = useState(false);
   // "Clear wiki for backtest range" — opt-in destructive op so re-running
@@ -391,6 +397,10 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
       forecaster_context_len: linkedForecaster?.ctx,
       forecaster_prediction_len: linkedForecaster?.pred,
       forecaster_bar_frequency: linkedForecaster?.freq,
+      // Per-day analyst lookback. parseNum returns undefined for blank/NaN
+      // so the backend default (252) takes over instead of getting None'd
+      // and re-erroring downstream.
+      backtest_lookback_days: parseNum(backtestLookbackDays),
       strategy: buildStrategyConfig(),
       risk_manager: buildRiskManagerConfig(),
       flow_id: currentFlowId ?? undefined,
@@ -555,6 +565,45 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
                       />
                     </TooltipTrigger>
                     <TooltipContent side="bottom">To (end of the simulated period)</TooltipContent>
+                  </Tooltip>
+                </div>
+
+                {/* Lookback override — same row treatment as the dates.
+                    Default 252 calendar days = Technicals' mom_6m floor.
+                    Tooltip explains the cost-vs-coverage knob. */}
+                <div className="flex items-center gap-2">
+                  <Tooltip delayDuration={200}>
+                    <TooltipTrigger asChild>
+                      <label
+                        htmlFor={`${id}-lookback`}
+                        className="text-xs text-muted-foreground whitespace-nowrap"
+                      >
+                        Lookback per day (days)
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="max-w-xs">
+                      How many calendar days of price history each analyst sees on every
+                      simulated day. Default 252 (~1 yr) covers Technicals' largest rolling
+                      window (mom_6m = 126 trading days). Below ~180 starves Technicals + the
+                      Risk Manager's 30-day vol. Lower for a cheaper backtest only if you
+                      know your flow has no Technicals/RM in it.
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip delayDuration={200}>
+                    <TooltipTrigger asChild>
+                      <input
+                        id={`${id}-lookback`}
+                        type="number"
+                        min={7}
+                        max={730}
+                        step={1}
+                        aria-label="Backtest lookback in calendar days"
+                        className="nodrag h-9 w-24 rounded-md border border-border bg-node px-2 text-sm tabular-nums focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        value={backtestLookbackDays}
+                        onChange={(e) => setBacktestLookbackDays(e.target.value.replace(/[^0-9]/g, ''))}
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Calendar days. Min 7, max 730.</TooltipContent>
                   </Tooltip>
                 </div>
                 <Tooltip delayDuration={200}>
