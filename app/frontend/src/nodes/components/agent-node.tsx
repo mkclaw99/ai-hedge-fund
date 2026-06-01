@@ -8,7 +8,7 @@ import { ModelSelector } from '@/components/ui/llm-selector';
 import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
 import { getDefaultModel, getModels, LanguageModel } from '@/data/models';
-import { getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
+import { addStateChangeListener, getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
 import { cn } from '@/lib/utils';
 import { type AgentNode } from '../types';
 import { getStatusColor } from '../utils';
@@ -41,43 +41,80 @@ export function AgentNode({
   const [availableModels, setAvailableModels] = useNodeState<LanguageModel[]>(id, 'availableModels', []);
   const [selectedModel, setSelectedModel] = useNodeState<LanguageModel | null>(id, 'selectedModel', null);
 
-  // Load models on mount, defaulting to the system default (Gemini) so a
-  // freshly-dropped analyst uses a working model instead of "Auto", which the
-  // backend resolves to OpenAI and errors on without an OpenAI key.
+  // Load models on mount; auto-seed the system default on a brand-new node
+  // so "Auto" doesn't resolve to OpenAI and 401 the run.
   //
-  // CLOSURE-RACE FIX: read the latest `selectedModel` from flowStateManager
-  // inside the effect body, NOT the closure-captured value. The effect deps
-  // exclude `selectedModel` (intentional — we don't want re-runs on every
-  // pick) so the closure freezes at first-render time. On a fresh page reload
-  // the first render can run BEFORE `loadFlow` has hydrated flowStateManager,
-  // making the closure see `null` even though the user has a saved choice.
-  // Then while the async getModels()/getDefaultModel() are in flight, the
-  // useNodeState change-listener rehydrates the saved value into `selectedModel`
-  // (good!), but the closure body still evaluates with the stale null and
-  // overwrites the rehydrated saved value with the default — exactly the
-  // "always resets to Gemini 3.1 Pro" symptom. Reading from the state
-  // manager AFTER the awaits guarantees we see the post-rehydrate value.
+  // The hard problem: distinguish "fresh node, no saved choice" from "saved
+  // node, rehydrate hasn't landed yet". Both look identical at mount time
+  // (flowStateManager has no entry for our nodeId). PR #106 tried to wait
+  // via `await Promise.all([getModels(), getDefaultModel()])` as a delay
+  // heuristic — but those fetches are memoised after first call, so on a
+  // subsequent flow load they resolve from cache in microseconds, far
+  // before loadFlow has finished its synchronous setNodeInternalState chain.
+  // Result: we still see "undefined", still write the default, still stomp
+  // the user's saved pick. User reported this repeatedly with !!! and rightly.
+  //
+  // Real fix: subscribe to state-manager changes. If ANY state activity for
+  // this node lands before our timeout, we treat it as a rehydrate and bail
+  // out — leaving the saved value in place. If nothing lands in 1500ms, we
+  // declare it a fresh node and seed the default. 1500ms is generous: in
+  // practice loadFlow runs synchronously and the rehydrate fires within
+  // ~10ms; the long window is insurance against slow tab restoration.
   useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribe: (() => void) | undefined;
+
+    const isFreshNode = () => {
+      const persisted = getNodeInternalState(id);
+      return !persisted || !('selectedModel' in persisted);
+    };
+
     const loadModels = async () => {
       try {
         const [models, defaultModel] = await Promise.all([getModels(), getDefaultModel()]);
+        if (cancelled) return;
         setAvailableModels(models);
-        // Latest-write-wins read against the source of truth, escaping the
-        // closure capture. `undefined` here means the key was never persisted
-        // (= fresh node); `null` means the user explicitly picked "Auto" and
-        // we must respect that, not stomp it with the default.
-        const persisted = getNodeInternalState(id);
-        const currentSelected = persisted ? persisted.selectedModel : undefined;
-        if (currentSelected === undefined && defaultModel) {
+        if (!defaultModel) return;
+        // Already rehydrated by the time we got here? Respect it.
+        if (!isFreshNode()) return;
+
+        // Wait for either a state-manager event that fills selectedModel
+        // for this node (= rehydrate landed) or a timeout (= node is
+        // genuinely fresh and we should seed the default).
+        await new Promise<void>((resolve) => {
+          let resolved = false;
+          const finish = () => {
+            if (resolved) return;
+            resolved = true;
+            if (timer) clearTimeout(timer);
+            unsubscribe?.();
+            resolve();
+          };
+          timer = setTimeout(finish, 1500);
+          unsubscribe = addStateChangeListener(() => {
+            if (!isFreshNode()) finish();
+          });
+        });
+        if (cancelled) return;
+
+        // Final check — if the state landed during the wait, isFreshNode is
+        // now false and we leave it alone. If still empty, this is a brand-
+        // new node and we seed.
+        if (isFreshNode()) {
           setSelectedModel(defaultModel);
         }
       } catch (error) {
         console.error('Failed to load models:', error);
-        // Keep empty array as fallback
       }
     };
-
     loadModels();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      unsubscribe?.();
+    };
   }, [setAvailableModels, id]);
 
   // Update the node context when the model changes

@@ -9,7 +9,7 @@ import { ThinkingBudgetField } from './agent-node';
 import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
 import { getDefaultModel, getModels, LanguageModel } from '@/data/models';
-import { getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
+import { addStateChangeListener, getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
 import { useOutputNodeConnection } from '@/hooks/use-output-node-connection';
 import { cn } from '@/lib/utils';
 import { type PortfolioManagerNode } from '../types';
@@ -51,35 +51,58 @@ export function PortfolioManagerNode({
     null
   );
 
-  // Load models on mount. See agent-node.tsx for the full write-up of the
-  // closure-capture race we're guarding against. Short version: the captured
-  // `selectedModel` from the first render can be null because loadFlow
-  // hasn't hydrated flowStateManager yet; if we trust it, the saved value
-  // gets stomped by the default. Read the live state inside the effect
-  // body to escape that capture.
+  // Load models on mount. See the agent-node.tsx version of this effect for
+  // the full write-up. Short version: cannot distinguish "fresh node" from
+  // "saved node, rehydrate hasn't landed yet" at mount-time. Subscribe to
+  // state-manager changes; if anything for this node arrives within 1500ms
+  // treat it as a rehydrate (= don't stomp the user's saved pick), else seed.
   useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribe: (() => void) | undefined;
+
+    const isFreshNode = () => {
+      const persisted = getNodeInternalState(id);
+      return !persisted || !('selectedModel' in persisted);
+    };
+
     const loadModels = async () => {
       try {
-        const [models, defaultModel] = await Promise.all([
-          getModels(),
-          getDefaultModel()
-        ]);
+        const [models, defaultModel] = await Promise.all([getModels(), getDefaultModel()]);
+        if (cancelled) return;
         setAvailableModels(models);
-        // Latest-write-wins read against the source of truth (escapes the
-        // captured `selectedModel`). `undefined` = never persisted (fresh
-        // node, seed default); `null` = user explicitly picked Auto, respect.
-        const persisted = getNodeInternalState(id);
-        const currentSelected = persisted ? persisted.selectedModel : undefined;
-        if (currentSelected === undefined && defaultModel) {
+        if (!defaultModel) return;
+        if (!isFreshNode()) return;
+
+        await new Promise<void>((resolve) => {
+          let resolved = false;
+          const finish = () => {
+            if (resolved) return;
+            resolved = true;
+            if (timer) clearTimeout(timer);
+            unsubscribe?.();
+            resolve();
+          };
+          timer = setTimeout(finish, 1500);
+          unsubscribe = addStateChangeListener(() => {
+            if (!isFreshNode()) finish();
+          });
+        });
+        if (cancelled) return;
+        if (isFreshNode()) {
           setSelectedModel(defaultModel);
         }
       } catch (error) {
         console.error('Failed to load models:', error);
-        // Keep empty array as fallback
       }
     };
-
     loadModels();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      unsubscribe?.();
+    };
   }, [setAvailableModels, id]);
 
   // Update the node context when the model changes
