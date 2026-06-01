@@ -1060,14 +1060,24 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
         {confArea && <path d={confArea} fill={TONE_FILL_INNER[t]} stroke="none" />}
         {confLine && <path d={confLine} fill="none" stroke={stroke} strokeWidth={1.6} />}
 
-        {/* X-axis day labels — every 5 days from t-30 to t+10 */}
-        {Array.from({ length: total }, (_, i) => i)
-          .filter((i) => i === 0 || i === histN - 1 || i === total - 1 || (histN - 1 - i) % 10 === 0 || (i - (histN - 1)) % 5 === 0)
-          .map((i) => (
+        {/* X-axis labels — adaptive step so the bottom row stays
+            readable at any chart size. Target ~15 labels; always show
+            start / now / end as anchors. At 30+10 points the step is
+            3 (≈ 13 labels); at 8192+1024 points the step is ~615
+            (≈ 15 labels). */}
+        {(() => {
+          const step = Math.max(1, Math.ceil(total / 15));
+          const anchors = new Set<number>([0, histN - 1, total - 1]);
+          const indices: number[] = [];
+          for (let i = 0; i < total; i++) {
+            if (anchors.has(i) || i % step === 0) indices.push(i);
+          }
+          return indices.map((i) => (
             <text key={i} x={xAt(i)} y={H - 12} textAnchor="middle" fontSize={FS_TICK} fill="currentColor" opacity={0.75}>
               {dayLabel(i)}
             </text>
-          ))}
+          ));
+        })()}
 
         {/* Panel labels — anchor top-left of each panel. dy=".9em" pushes
             the text fully under the (otherwise zero-height) baseline so

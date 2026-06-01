@@ -67,7 +67,12 @@ _pipeline_lock = Lock()
 # full ~256-step input regardless; this is just what we send to the UI.
 _CHART_HISTORY_MIN = 30        # never less than this (sane daily default)
 _CHART_HISTORY_RATIO = 5       # show ~5× the forecast horizon as context
-_CHART_HISTORY_HARD_MAX = 1024  # cap so a 17-hr 1-min forecast doesn't ship 32k bars
+# Hard cap matches Chronos-2's max context length: when the user sets
+# Context Bars = 8192 they want the chart to *show* what the model saw,
+# not a truncated slice. Payload at 8192 floats ≈ 50–100 KB; the
+# frontend renders an SVG polyline of that length without trouble and
+# uses adaptive x-axis label density so labels don't overrun.
+_CHART_HISTORY_HARD_MAX = 8192
 # Fence marker the frontend's ForecasterNode parses out of the per-ticker
 # analysis Markdown. Bracketed so a Markdown viewer still renders the
 # block as a labelled code fence if a human opens the raw analysis.
@@ -143,26 +148,50 @@ def _resolve_frequency(state: AgentState) -> str:
 def _fetch_bars(ticker: str, end_date: str, frequency: str, count: int, api_key: str | None) -> np.ndarray:
     """Return up to *count* close-price bars for *ticker* at the given frequency.
 
-    Daily goes through the existing provider chain (FD → Alpaca → Yahoo)
-    so the SQLite cache and the fallbacks all work. Intraday bypasses the
-    chain and pulls from yfinance directly because the chain is daily-only
-    today and Alpaca's free-tier intraday is unreliable. Returns an empty
-    array on any failure — the caller treats that as "skip this ticker".
+    All frequencies (daily included) go through **yfinance directly**.
+    The provider chain (FD → Alpaca → Yahoo) is fine for ~3-year ranges,
+    but the forecaster wants *deep* history (Chronos-2's max context is
+    8192 bars ≈ 32 years daily). Financial Datasets' free-tier caps at
+    ~750 bars / ~3 years, and because the chain treats any non-empty
+    response as success it never falls through to yfinance. So we skip
+    the chain entirely for the forecaster path and use yfinance, which
+    has unbounded daily history. Returns an empty array on any failure —
+    the caller treats that as "skip this ticker".
     """
+    # api_key is unused now (yfinance needs no key) but kept in the
+    # signature so all callers stay simple.
+    _ = api_key
+
     if frequency == "day":
-        # Pull ~count trading days. Overshoot by 1.6× on calendar days to
-        # cover weekends/holidays; tail back to count below.
         try:
-            start = (datetime.fromisoformat(end_date) - timedelta(days=int(count * 1.6))).date().isoformat()
-        except Exception:
-            start = end_date
-        prices = get_prices(ticker=ticker, start_date=start, end_date=end_date, api_key=api_key)
-        if not prices:
+            import yfinance as yf
+            # 1.6× overshoot on calendar days for weekends/holidays;
+            # yfinance returns all daily bars in [start, end] — much
+            # more than the ~3-year cap FD imposes.
+            try:
+                end_dt = datetime.fromisoformat(end_date)
+                start = (end_dt - timedelta(days=int(count * 1.6))).date().isoformat()
+            except Exception:
+                # Bad end_date string — fall back to a wide window
+                # yfinance can fill (since-1990 covers most equities).
+                start = "1990-01-01"
+            df = yf.download(
+                tickers=ticker,
+                start=start,
+                end=end_date,
+                progress=False,
+                auto_adjust=True,
+                threads=False,
+            )
+            if df is None or df.empty:
+                return np.array([], dtype=np.float32)
+            close = df["Close"]
+            if hasattr(close, "columns"):
+                close = close.iloc[:, 0]
+            return pd.to_numeric(close, errors="coerce").dropna().tail(count).to_numpy(dtype=np.float32)
+        except Exception as e:
+            logger.warning("daily fetch failed for %s: %s", ticker, e)
             return np.array([], dtype=np.float32)
-        df = prices_to_df(prices)
-        if df.empty or "close" not in df.columns:
-            return np.array([], dtype=np.float32)
-        return pd.to_numeric(df["close"], errors="coerce").dropna().tail(count).to_numpy(dtype=np.float32)
 
     # --- Intraday via yfinance ---------------------------------------------
     interval = _YFI_INTERVAL.get(frequency)
@@ -290,15 +319,15 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
         # the existing SSE 'analysis' channel carries it through without a
         # schema change. ForecasterNode parses the fence; other components
         # see it as a labelled code block and ignore it.
-        # Scale chart history to the forecast horizon so the UI ratio
-        # stays readable: at daily/pred=10 we ship ~50 bars (~10 weeks),
-        # at 1-min/pred=1024 we ship ~1024 bars (matching the forecast
-        # width — fan and history occupy equal visual space). Capped
-        # at the actual context the model saw, and at a hard ceiling so
-        # the payload stays bounded.
+        # Chart history matches what Chronos actually saw: show the full
+        # context_len (clamped to what the provider returned and to a
+        # hard ceiling). Users explicitly choose Context Bars to feed
+        # the model; the chart should reflect that choice rather than
+        # truncating to a small slice. _CHART_HISTORY_MIN keeps a sane
+        # floor for unconfigured runs.
         chart_history_n = min(
             len(series_by_ticker[ticker]),
-            max(_CHART_HISTORY_MIN, _CHART_HISTORY_RATIO * prediction_len),
+            max(_CHART_HISTORY_MIN, context_len),
             _CHART_HISTORY_HARD_MAX,
         )
         history = [float(x) for x in series_by_ticker[ticker][-chart_history_n:].tolist()]
