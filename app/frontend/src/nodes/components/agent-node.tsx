@@ -176,7 +176,10 @@ const THINKING_OPTIONS: { value: string; label: string; hint: string }[] = [
   { value: 'high',    label: 'High (~24k tokens)', hint: 'Maximum reasoning budget (Pro caps at 24k).' },
 ];
 
-function ThinkingBudgetField({ id }: { id: string }) {
+// Exported so the Portfolio Manager node (which doesn't share AgentNode's
+// component tree) can render the same control without duplicating the
+// dropdown shape, options, tooltip copy, or the `nodrag` className.
+export function ThinkingBudgetField({ id }: { id: string }) {
   const [value, setValue] = useNodeState<string>(id, 'thinkingBudget', 'dynamic');
   const active = THINKING_OPTIONS.find((o) => o.value === value) ?? THINKING_OPTIONS[0];
   return (

@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { CardContent } from '@/components/ui/card';
 import { ModelSelector } from '@/components/ui/llm-selector';
+import { ThinkingBudgetField } from './agent-node';
 import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
 import { getDefaultModel, getModels, LanguageModel } from '@/data/models';
@@ -146,6 +147,15 @@ export function PortfolioManagerNode({
                   onChange={handleModelChange}
                   placeholder="Auto"
                 />
+                {/* Gemini thinking budget — same field the persona analysts
+                    expose under Advanced. The PM synthesises every analyst
+                    plus the track record, so its prompt is the heaviest in
+                    the flow; being able to dial reasoning up to 'high' on
+                    PM-only without paying that cost on every persona is
+                    the usual ask. Ignored on non-Google providers. */}
+                {selectedModel?.provider === 'Google' && (
+                  <ThinkingBudgetField id={id} />
+                )}
               </div>
             </div>
           </div>
