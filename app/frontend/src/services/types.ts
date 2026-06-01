@@ -116,6 +116,10 @@ export interface BacktestRequest extends BaseHedgeFundRequest {
   forecaster_prediction_len?: number;
   forecaster_bar_frequency?: 'day' | 'hour' | '5min' | '1min';
   agent_thinking_budgets?: Record<string, 'off' | 'low' | 'medium' | 'high' | 'dynamic'>;
+  // Per-day analyst lookback (calendar days). undef → backend default 252.
+  // Floor for full Technicals/RM coverage is ~178; settings below that
+  // silently starve those agents.
+  backtest_lookback_days?: number;
 }
 
 export interface BacktestDayResult {
