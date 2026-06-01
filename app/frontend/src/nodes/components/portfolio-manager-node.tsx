@@ -9,7 +9,7 @@ import { ThinkingBudgetField } from './agent-node';
 import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
 import { getDefaultModel, getModels, LanguageModel } from '@/data/models';
-import { addStateChangeListener, getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
+import { getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
 import { useOutputNodeConnection } from '@/hooks/use-output-node-connection';
 import { cn } from '@/lib/utils';
 import { type PortfolioManagerNode } from '../types';
@@ -39,71 +39,42 @@ export function PortfolioManagerNode({
   const isInProgress = status === 'IN_PROGRESS';
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
-  // Use persistent state hooks
-  const [availableModels, setAvailableModels] = useNodeState<LanguageModel[]>(
-    id,
-    'availableModels',
-    []
-  );
+  // Selected model — persisted per node so the user's pick survives reload.
   const [selectedModel, setSelectedModel] = useNodeState<LanguageModel | null>(
     id,
     'selectedModel',
-    null
+    null,
   );
+  // Available model list — plain useState (NOT useNodeState). The list is
+  // identical for every node in every flow; persisting it per-node bloated
+  // the DB and created a stuck-empty failure mode where `[]` from the first
+  // mount got saved and never overwritten. See agent-node.tsx for the
+  // detailed write-up; same shape here so the PM stays in lockstep.
+  const [availableModels, setAvailableModels] = useState<LanguageModel[]>([]);
 
-  // Load models on mount. See the agent-node.tsx version of this effect for
-  // the full write-up. Short version: cannot distinguish "fresh node" from
-  // "saved node, rehydrate hasn't landed yet" at mount-time. Subscribe to
-  // state-manager changes; if anything for this node arrives within 1500ms
-  // treat it as a rehydrate (= don't stomp the user's saved pick), else seed.
+  // Auto-seed the default on a brand-new PM so "Auto" doesn't fall into
+  // the OpenAI path. Freshness is value-based — useNodeState's init effect
+  // writes the default (null) on mount, so the old "is the key in the bag"
+  // check was always false-positive. Saved picks come back as truthy objects
+  // and bypass the seeding.
   useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let unsubscribe: (() => void) | undefined;
-
-    const isFreshNode = () => {
-      const persisted = getNodeInternalState(id);
-      return !persisted || !('selectedModel' in persisted);
-    };
-
     const loadModels = async () => {
       try {
         const [models, defaultModel] = await Promise.all([getModels(), getDefaultModel()]);
         if (cancelled) return;
         setAvailableModels(models);
         if (!defaultModel) return;
-        if (!isFreshNode()) return;
-
-        await new Promise<void>((resolve) => {
-          let resolved = false;
-          const finish = () => {
-            if (resolved) return;
-            resolved = true;
-            if (timer) clearTimeout(timer);
-            unsubscribe?.();
-            resolve();
-          };
-          timer = setTimeout(finish, 1500);
-          unsubscribe = addStateChangeListener(() => {
-            if (!isFreshNode()) finish();
-          });
-        });
-        if (cancelled) return;
-        if (isFreshNode()) {
-          setSelectedModel(defaultModel);
-        }
+        const persisted = getNodeInternalState(id);
+        if (persisted && persisted.selectedModel) return;
+        setSelectedModel(defaultModel);
       } catch (error) {
         console.error('Failed to load models:', error);
       }
     };
     loadModels();
-
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-      unsubscribe?.();
-    };
-  }, [setAvailableModels, id]);
+    return () => { cancelled = true; };
+  }, [id, setSelectedModel]);
 
   // Update the node context when the model changes
   useEffect(() => {
