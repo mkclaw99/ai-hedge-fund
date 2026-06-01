@@ -26,7 +26,10 @@ import requests
 logger = logging.getLogger(__name__)
 _LOCK = threading.Lock()
 
-_BASE = os.environ.get("WIKI_MEMORY_DIR") or "wiki"
+# Default base is `<repo>/wiki` via src.paths.wiki_base — absolute, so the
+# names cache doesn't move with CWD. See src/paths.py.
+from src.paths import wiki_base
+_BASE = os.environ.get("WIKI_MEMORY_DIR") or str(wiki_base())
 _PATH = Path(os.environ.get("TICKER_NAMES_PATH") or (Path(_BASE) / "_ticker_names.json"))
 
 # In-memory cache. ``None`` until first ``resolve()`` triggers a load

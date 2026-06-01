@@ -44,15 +44,20 @@ def is_enabled() -> bool:
 
 
 def flow_root(flow_slug: str | None) -> str | None:
-    """Wiki directory for a flow's memory namespace, e.g. ``wiki/flow-12``.
+    """Wiki directory for a flow's memory namespace, e.g. ``<repo>/wiki/flow-12``.
 
     Returns None for a falsy slug so callers fall back to the default global
-    wiki (``$WIKI_MEMORY_DIR`` or ``./wiki``) — used by the CLI and any path that
-    doesn't carry a flow id.
+    wiki (``$WIKI_MEMORY_DIR`` or ``<repo>/wiki``) — used by the CLI and any
+    path that doesn't carry a flow id.
+
+    Returns an **absolute** path (via ``src.paths.wiki_base``) so the wiki
+    location doesn't depend on whichever CWD the process happened to launch
+    from. See ``src/paths.py`` for the why.
     """
     if not flow_slug:
         return None
-    return str(Path("wiki") / flow_slug)
+    from src.paths import wiki_base  # local import: avoids touching import order
+    return str(wiki_base() / flow_slug)
 
 
 def normalize_analyst_name(agent_id: str) -> str:

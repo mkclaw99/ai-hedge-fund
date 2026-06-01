@@ -50,9 +50,12 @@ logger = logging.getLogger(__name__)
 
 def _default_db_path() -> Path:
     # Project-local default — keeps the cache visible alongside the code and
-    # easy to wipe (`rm .cache/llm.sqlite`) when prompts change shape and old
-    # cached results would be stale.
-    return Path.cwd() / ".cache" / "llm.sqlite"
+    # easy to wipe (`rm .cache/llm.sqlite` from the repo root) when prompts
+    # change shape and old cached results would be stale. Anchored to the
+    # repo via src.paths.llm_cache_base (NOT Path.cwd, which fragments the
+    # cache when uvicorn is launched from app/frontend or any other dir).
+    from src.paths import llm_cache_base
+    return llm_cache_base() / "llm.sqlite"
 
 
 class SqliteLLMCache(BaseCache):

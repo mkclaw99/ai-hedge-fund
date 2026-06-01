@@ -19,7 +19,10 @@ from langchain_core.callbacks.base import BaseCallbackHandler
 _LOCK = threading.Lock()
 
 # Stored next to the WikiMemory (which is gitignored); override with TOKEN_USAGE_PATH.
-_BASE = os.environ.get("WIKI_MEMORY_DIR") or "wiki"
+# Default base is `<repo>/wiki` via src.paths.wiki_base — an absolute path
+# anchored to the repo, not whatever CWD the process was launched from.
+from src.paths import wiki_base
+_BASE = os.environ.get("WIKI_MEMORY_DIR") or str(wiki_base())
 _PATH = Path(os.environ.get("TOKEN_USAGE_PATH") or (Path(_BASE) / "token_usage.json"))
 
 
