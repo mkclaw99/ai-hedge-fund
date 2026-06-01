@@ -300,7 +300,18 @@ def generate_trading_decision(
     # fan width, rule). Without this block the PM would see Chronos as
     # nothing but a sig/conf vote, blind to the horizon mismatch with the
     # Strategy's holding period. Empty when no forecaster ran.
-    forecast_block = _render_forecast_block(analyst_signals, tickers_for_llm)
+    #
+    # NOTE: this function only receives `signals_by_ticker` (the compacted
+    # {ticker: {agent: {sig, conf}}} view), which does NOT carry the
+    # forecaster's `forecast` payload — that survives only on the raw
+    # `state["data"]["analyst_signals"]` shape. PR #96 wrote
+    # `_render_forecast_block(analyst_signals, ...)` but `analyst_signals`
+    # is a local in the caller (`portfolio_management_agent`), not here.
+    # NameError → every PM run crashed → every prior analyst froze on
+    # "Error" in the UI because the SSE stream died before Done events
+    # fired. Read from state directly to fix.
+    raw_signals = (state.get("data", {}) or {}).get("analyst_signals", {}) or {}
+    forecast_block = _render_forecast_block(raw_signals, tickers_for_llm)
 
     # Derivatives — when the Strategy node enables options, fetch a compact
     # per-ticker options summary from Alpaca and inject it. Fail-open: any
