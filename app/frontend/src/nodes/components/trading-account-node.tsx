@@ -15,6 +15,19 @@ import { TradingAccountDetailsDialog } from './trading-account-details-dialog';
 const fmt = (n?: number) =>
   typeof n === 'number' ? n.toLocaleString(undefined, { style: 'currency', currency: 'USD' }) : '—';
 
+// Trade-tick cadences. 5min is the floor — going to 1-min would mean
+// ~390 PM calls per market day. At Gemini Pro pricing (~$0.04/call) that's
+// $15/day per ticker for no measurable signal gain on a layer (analysts)
+// that doesn't move that fast anyway. The scheduler enforces market-hour
+// gating on top, so 'hourly' = ~7 effective ticks/day.
+type TradeSchedule = 'off' | '5min' | '15min' | 'hourly';
+const TRADE_SCHEDULE_OPTIONS: { value: TradeSchedule; label: string; hint: string }[] = [
+  { value: 'off', label: 'Off', hint: 'No automatic ticks. Trades only fire when you click Play on the flow.' },
+  { value: '5min', label: 'Every 5 min', hint: 'Up to ~78 PM calls/day during market hours. Use min decision interval on the Strategy node to throttle.' },
+  { value: '15min', label: 'Every 15 min', hint: '~26 PM calls/day. Sensible default for intraday momentum without the cost of 5-min.' },
+  { value: 'hourly', label: 'Hourly', hint: '~7 PM calls/day. Good for swing-style strategies.' },
+];
+
 export function TradingAccountNode({ data, selected, id, isConnectable }: NodeProps<TradingAccountNodeType>) {
   // User-set target / baseline budget. Alpaca paper has its own actual balance,
   // shown alongside this; we don't try to push this into Alpaca (paper accounts
@@ -22,6 +35,10 @@ export function TradingAccountNode({ data, selected, id, isConnectable }: NodePr
   const [startingBudget, setStartingBudget] = useNodeState(id, 'startingBudget', 100000);
   // Opt-in: submit the PM's decisions as Alpaca PAPER orders. Default OFF.
   const [autoTrade, setAutoTrade] = useNodeState<boolean>(id, 'autoTrade', false);
+  // Decoupled trade-tick cadence. Independent of how often the analyst
+  // layer re-runs — the PM re-decides on cached analyst signals + fresh
+  // prices. See app/backend/services/trade_scheduler.py. Default off.
+  const [tradeSchedule, setTradeSchedule] = useNodeState<TradeSchedule>(id, 'tradeSchedule', 'off');
 
   const [account, setAccount] = useState<PaperAccount | null>(null);
   const [loading, setLoading] = useState(true);
@@ -197,6 +214,37 @@ export function TradingAccountNode({ data, selected, id, isConnectable }: NodePr
                 onChange={(e) => setStartingBudget(parseFloat(e.target.value) || 0)}
                 className="nodrag h-9 w-full rounded-md border border-border bg-node px-3 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
+            </div>
+
+            {/* Trade Schedule — decoupled from how often analysts re-run. The
+                PM re-decides this often on cached analyst signals + fresh
+                prices. Gated by market-hour check in the backend scheduler,
+                so 'hourly' outside RTH = quiet skip. See trade_scheduler.py. */}
+            <div className="flex flex-col gap-2">
+              <div className="text-subtitle text-primary flex items-center gap-1">
+                <Tooltip delayDuration={200}>
+                  <TooltipTrigger asChild><span>Trade Schedule</span></TooltipTrigger>
+                  <TooltipContent side="right" className="max-w-xs">
+                    How often the PM re-decides on cached analyst signals + fresh
+                    prices. Independent of how often analysts re-run. Tick fires only
+                    during regular trading hours (09:30–16:00 ET, weekdays). Use
+                    Strategy → Min decision interval to throttle the LLM cost.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              <select
+                value={tradeSchedule}
+                onChange={(e) => setTradeSchedule(e.target.value as TradeSchedule)}
+                className="nodrag h-9 w-full rounded-md border border-border bg-node px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                aria-label="Trade schedule"
+              >
+                {TRADE_SCHEDULE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value} title={o.hint}>{o.label}</option>
+                ))}
+              </select>
+              <span className="text-xs text-muted-foreground">
+                {TRADE_SCHEDULE_OPTIONS.find((o) => o.value === tradeSchedule)?.hint}
+              </span>
             </div>
 
             {/* Auto-trade toggle (opt-in, gated on paper credentials being valid) */}

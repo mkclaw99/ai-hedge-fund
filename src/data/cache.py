@@ -174,6 +174,28 @@ class Cache:
         """Append new price data to cache."""
         self._set("prices", self._prices_cache, ticker, data, key_field="time")
 
+    def evict_prices(self, ticker: str) -> None:
+        """Drop both the in-process and the persistent price entry for a ticker.
+
+        Used by the decoupled trade-tick path (``refresh_prices=True``) so the
+        next ``get_prices`` call re-fetches today's bar from the provider chain
+        instead of handing back yesterday's cached "latest". The persistent
+        SQLite backend (if wired) is also wiped for the same key — otherwise
+        a fresh provider fetch would just re-hydrate from disk on the next
+        process restart and re-serve the stale entry.
+        """
+        bucket_key = str(ticker).upper()
+        self._prices_cache.pop(bucket_key, None)
+        if self._backend is not None:
+            try:
+                self._backend.delete("prices", bucket_key)
+            except Exception:
+                # Best-effort: an evict failure shouldn't break the tick.
+                # In-memory eviction above already takes effect for this
+                # process; persistent-layer staleness is a process-restart-
+                # only concern.
+                pass
+
     def get_financial_metrics(self, ticker: str) -> list[dict[str, any]] | None:
         """Get cached financial metrics if available."""
         return self._get("financial_metrics", self._financial_metrics_cache, ticker)

@@ -201,15 +201,27 @@ def read_back(tickers: list[str], *, analyst: str | None = None, root: str | Non
         return ""
 
 
-def read_latest_signals(tickers: list[str], *, root: str | None = None) -> dict[str, dict[str, dict]]:
+def read_latest_signals(
+    tickers: list[str],
+    *,
+    root: str | None = None,
+    with_date: bool = False,
+) -> dict[str, dict[str, dict]]:
     """Rehydrate ``analyst_signals`` from the wiki for a replay-strategy run.
 
     Shape mirrors what live analysts populate in ``state["data"]["analyst_signals"]``:
-    ``{agent_key: {ticker: {signal, confidence, reasoning}}}``. The PM filters on
-    the ``risk_management_agent`` prefix and otherwise treats every key as an
-    analyst — so we synthesize a stable key from the normalized analyst name
-    (e.g. ``"Warren Buffett" → "warren_buffett_agent"``). Risk-manager entries
-    in memory (if any) are dropped — risk lives in the fresh run, not the wiki.
+    ``{agent_key: {ticker: {signal, confidence, reasoning[, date]}}}``. The PM
+    filters on the ``risk_management_agent`` prefix and otherwise treats every
+    key as an analyst — so we synthesize a stable key from the normalized
+    analyst name (e.g. ``"Warren Buffett" → "warren_buffett_agent"``).
+    Risk-manager entries in memory (if any) are dropped — risk lives in the
+    fresh run, not the wiki.
+
+    When ``with_date=True``, each ticker dict gains a ``date`` field
+    (``YYYY-MM-DD`` of the source insight). The decoupled trade-tick loop
+    uses this to render the PM's signal-age block and to bail out when
+    every cached signal exceeds ``max_signal_age_hours``. Off by default
+    so the existing Strategy "Replay" button shape stays untouched.
 
     Returns ``{}`` for any unhappy path (no tickers, no root, empty wiki,
     unexpected shape). Callers should treat ``{}`` as "no prior signals" and
@@ -232,11 +244,14 @@ def read_latest_signals(tickers: list[str], *, root: str | None = None) -> dict[
                 # read_back path — same as a normal run — so the info isn't lost.
                 if key.startswith("risk_management_agent") or key.startswith("portfolio_manager"):
                     continue
-                out.setdefault(key, {})[t] = {
+                entry: dict = {
                     "signal": ins.signal,
                     "confidence": int(ins.confidence),
                     "reasoning": ins.reasoning,
                 }
+                if with_date:
+                    entry["date"] = ins.date
+                out.setdefault(key, {})[t] = entry
         return out
     except Exception as exc:
         logger.warning("WikiMemory replay-signals read skipped due to error: %s", exc)

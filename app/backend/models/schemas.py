@@ -116,6 +116,14 @@ class StrategyConfig(BaseModel):
     allow_options: bool = False
     allow_etfs: bool = False
     note: Optional[str] = None
+    # Decoupled trade-tick throttle knobs. The trade scheduler can fire as
+    # often as every 5 min, but the PM skips tickers that haven't moved
+    # materially since the last decision. Without these the cost of an
+    # `hourly`-or-faster trade schedule blows up (~$0.04 per Gemini Pro
+    # call × N tickers × ticks/day).
+    min_decision_interval_minutes: Optional[float] = None  # default 30 in UI
+    price_move_threshold_pct: Optional[float] = None        # default 1.0% in UI
+    max_signal_age_hours: Optional[float] = None            # default 168h (7d); PM bails if avg age exceeds
 
 
 class BacktestRequest(BaseHedgeFundRequest):
@@ -189,6 +197,14 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     # (resolve_thinking_budget converts to token counts). None / missing
     # entry → model default. Ignored on non-Google models.
     agent_thinking_budgets: Optional[Dict[str, str]] = None
+    # Decoupled trade-tick fields. The Trading Account node owns the
+    # tick schedule; the run carries it across so the executor knows
+    # whether this is a regular full-graph run or a slim trade-tick
+    # replay. ``refresh_prices=True`` evicts the in-process prices cache
+    # so today's bar gets reloaded — without this, a tick fired at
+    # 11:00 ET would still see yesterday's close as the latest "now".
+    trade_schedule: Optional[str] = None  # 'off' | '5min' | '15min' | 'hourly'
+    refresh_prices: Optional[bool] = None
 
     def get_start_date(self) -> str:
         """Resolve the effective start_date for this run.
