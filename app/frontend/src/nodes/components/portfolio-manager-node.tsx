@@ -9,7 +9,7 @@ import { ThinkingBudgetField } from './agent-node';
 import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
 import { getDefaultModel, getModels, LanguageModel } from '@/data/models';
-import { useNodeState } from '@/hooks/use-node-state';
+import { getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
 import { useOutputNodeConnection } from '@/hooks/use-output-node-connection';
 import { cn } from '@/lib/utils';
 import { type PortfolioManagerNode } from '../types';
@@ -51,7 +51,12 @@ export function PortfolioManagerNode({
     null
   );
 
-  // Load models on mount
+  // Load models on mount. See agent-node.tsx for the full write-up of the
+  // closure-capture race we're guarding against. Short version: the captured
+  // `selectedModel` from the first render can be null because loadFlow
+  // hasn't hydrated flowStateManager yet; if we trust it, the saved value
+  // gets stomped by the default. Read the live state inside the effect
+  // body to escape that capture.
   useEffect(() => {
     const loadModels = async () => {
       try {
@@ -60,9 +65,12 @@ export function PortfolioManagerNode({
           getDefaultModel()
         ]);
         setAvailableModels(models);
-        
-        // Set default model if no model is currently selected
-        if (!selectedModel && defaultModel) {
+        // Latest-write-wins read against the source of truth (escapes the
+        // captured `selectedModel`). `undefined` = never persisted (fresh
+        // node, seed default); `null` = user explicitly picked Auto, respect.
+        const persisted = getNodeInternalState(id);
+        const currentSelected = persisted ? persisted.selectedModel : undefined;
+        if (currentSelected === undefined && defaultModel) {
           setSelectedModel(defaultModel);
         }
       } catch (error) {
@@ -72,7 +80,7 @@ export function PortfolioManagerNode({
     };
 
     loadModels();
-  }, [setAvailableModels, selectedModel, setSelectedModel]);
+  }, [setAvailableModels, id]);
 
   // Update the node context when the model changes
   useEffect(() => {
