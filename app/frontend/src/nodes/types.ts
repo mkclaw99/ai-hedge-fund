@@ -5,6 +5,7 @@ export type NodeMessage = MessageItem;
 
 export type AgentNode = Node<{ name: string, description: string, status: string }, 'agent-node'>;
 export type ForecasterNode = Node<{ name: string, description: string, status: string }, 'forecaster-node'>;
+export type JimSimonsNode = Node<{ name: string, description: string, status: string }, 'jim-simons-node'>;
 export type InvestmentReportNode = Node<{ name: string, description: string, status: string }, 'investment-report-node'>;
 export type JsonOutputNode = Node<{ name: string, description: string, status: string }, 'json-output-node'>;
 export type PortfolioStartNode = Node<{ name: string, description: string, status: string }, 'portfolio-start-node'>;
@@ -16,4 +17,4 @@ export type ResearchCompaniesNode = Node<{ name: string, description: string, st
 export type RiskManagerNode = Node<{ name: string, description: string, status: string }, 'risk-manager-node'>;
 export type StrategyNode = Node<{ name: string, description: string, status: string }, 'strategy-node'>;
 export type TradingAccountNode = Node<{ name: string, description: string, status: string }, 'trading-account-node'>;
-export type AppNode = BuiltInNode | AgentNode | ForecasterNode | InvestmentReportNode | JsonOutputNode | PortfolioStartNode | PortfolioManagerNode | StockAnalyzerNode | MemoryNode | ResearchAreaNode | ResearchCompaniesNode | RiskManagerNode | StrategyNode | TradingAccountNode;
+export type AppNode = BuiltInNode | AgentNode | ForecasterNode | JimSimonsNode | InvestmentReportNode | JsonOutputNode | PortfolioStartNode | PortfolioManagerNode | StockAnalyzerNode | MemoryNode | ResearchAreaNode | ResearchCompaniesNode | RiskManagerNode | StrategyNode | TradingAccountNode;

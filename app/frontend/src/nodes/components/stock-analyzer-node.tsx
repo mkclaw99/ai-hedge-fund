@@ -2,6 +2,8 @@ import { useReactFlow, type NodeProps } from '@xyflow/react';
 import { ChartLine, ChevronDown, Play, Square } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
+import { resolveEffectiveStrategy } from '@/lib/effective-strategy';
+
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Button } from '@/components/ui/button';
 import { CardContent } from '@/components/ui/card';
@@ -224,6 +226,12 @@ export function StockAnalyzerNode({
       }
     }
 
+    // Effective strategy — Strategy node's manual config OR Simons's
+    // recommended strategy if a Simons node is wired into Strategy.
+    // Lives in @/lib/effective-strategy so the same resolver is shared
+    // by portfolio-start-node and the backend trade-executor mirror.
+    const effectiveStrategy = resolveEffectiveStrategy(allNodes, allEdges, reachableNodeIds);
+
     // Check if we're in backtest mode
     if (runMode === 'backtest') {
       // Use the flow connection hook to run the backtest with selected dates
@@ -250,6 +258,7 @@ export function StockAnalyzerNode({
         forecaster_prediction_len: forecasterPredictionLen,
         forecaster_bar_frequency: forecasterBarFrequency,
         agent_thinking_budgets: Object.keys(agentThinkingBudgets).length > 0 ? agentThinkingBudgets : undefined,
+        strategy: effectiveStrategy,
       });
     } else {
       // Use the regular hedge fund API for single run
@@ -275,6 +284,7 @@ export function StockAnalyzerNode({
         agent_thinking_budgets: Object.keys(agentThinkingBudgets).length > 0 ? agentThinkingBudgets : undefined,
         start_date: startDate,
         end_date: endDate,
+        strategy: effectiveStrategy,
       });
     }
   };

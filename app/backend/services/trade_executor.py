@@ -185,6 +185,15 @@ async def execute_trade_tick(
         # Configs from sidecar nodes.
         strategy_cfg = _node_internal_state(flow, "strategy-node") or {}
         risk_cfg = _node_internal_state(flow, "risk-manager-node") or {}
+        # Simons strategy override — if a Jim Simons node is wired into the
+        # Strategy node, its persisted ``recommended_strategy`` replaces the
+        # manual config. Faithful to the user's "Strategy mode = Replace"
+        # choice: Strategy node's own fields are visibly inert when Simons
+        # is driving, and the trade tick honours the same swap so the PM
+        # sees one consistent strategy regardless of which path triggered it.
+        simons_override = _simons_strategy_override(flow)
+        if simons_override is not None:
+            strategy_cfg = simons_override
         starting_budget = float(ta_state.get("startingBudget") or 100000)
         auto_trade = bool(ta_state.get("autoTrade"))
 
@@ -270,7 +279,17 @@ async def execute_trade_tick(
 
 def _safe_strategy_config(state: dict) -> Any | None:
     """Project the trading-account-node's view of Strategy fields into the
-    StrategyConfig pydantic shape. None when no Strategy node is wired."""
+    StrategyConfig pydantic shape. None when no Strategy node is wired.
+
+    Two input shapes are accepted:
+      * Strategy-node ``internal_state`` (camelCase keys from useNodeState):
+        ``maxPositionPct``, ``sizingRule``, etc.
+      * Simons-recommended dict (snake_case, already in StrategyConfig shape):
+        ``max_position_pct``, ``sizing_rule``, etc. — returned by
+        ``recommended_strategy_for_cadence`` in src/agents/jim_simons.py.
+    The dual-shape read keeps the override seamless without forcing the
+    Simons agent to publish in the Strategy node's UI casing.
+    """
     if not state:
         return None
     try:
@@ -281,24 +300,75 @@ def _safe_strategy_config(state: dict) -> Any | None:
                 return float(v) if v not in (None, "") else None
             except (TypeError, ValueError):
                 return None
+        # Pick the right key for each field — camelCase first (Strategy node),
+        # falling back to snake_case (Simons recommendation).
+        def k(camel: str, snake: str):
+            return state.get(camel) if camel in state else state.get(snake)
         return StrategyConfig(
-            style=state.get("style") or None,
-            sizing_rule=state.get("sizingRule") or None,
-            max_position_pct=f(state.get("maxPositionPct")),
-            max_sector_pct=f(state.get("maxSectorPct")),
-            holding_period=state.get("holdingPeriod") or None,
-            stop_loss_pct=f(state.get("stopLossPct")),
-            take_profit_pct=f(state.get("takeProfitPct")),
-            allow_stocks=state.get("allowStocks") is not False,
-            allow_options=bool(state.get("allowOptions")),
-            allow_etfs=bool(state.get("allowEtfs")),
-            note=state.get("note") or None,
-            min_decision_interval_minutes=f(state.get("minDecisionIntervalMinutes")),
-            price_move_threshold_pct=f(state.get("priceMoveThresholdPct")),
-            max_signal_age_hours=f(state.get("maxSignalAgeHours")),
+            style=k("style", "style") or None,
+            sizing_rule=k("sizingRule", "sizing_rule") or None,
+            max_position_pct=f(k("maxPositionPct", "max_position_pct")),
+            max_sector_pct=f(k("maxSectorPct", "max_sector_pct")),
+            holding_period=k("holdingPeriod", "holding_period") or None,
+            stop_loss_pct=f(k("stopLossPct", "stop_loss_pct")),
+            take_profit_pct=f(k("takeProfitPct", "take_profit_pct")),
+            allow_stocks=k("allowStocks", "allow_stocks") is not False,
+            allow_options=bool(k("allowOptions", "allow_options")),
+            allow_etfs=bool(k("allowEtfs", "allow_etfs")),
+            note=k("note", "note") or None,
+            min_decision_interval_minutes=f(k("minDecisionIntervalMinutes", "min_decision_interval_minutes")),
+            price_move_threshold_pct=f(k("priceMoveThresholdPct", "price_move_threshold_pct")),
+            max_signal_age_hours=f(k("maxSignalAgeHours", "max_signal_age_hours")),
         )
     except Exception:
         return None
+
+
+def _simons_strategy_override(flow: HedgeFundFlow) -> dict | None:
+    """Return the persisted Simons-recommended StrategyConfig dict when a
+    Simons node is wired into the Strategy node on this flow. None when
+    no Simons node exists, none is wired to Strategy, or none has produced
+    a recommended_strategy yet (i.e. no tick has fired).
+
+    Edge check: simple "any edge from Simons to Strategy" — handle-level
+    differentiation isn't needed because the user could only sensibly wire
+    the strategy output to the Strategy node anyway. The recommended_strategy
+    is read from ``flow.data.simonsRun[node_id]`` (persisted by simons_executor)
+    so it survives across scheduler ticks without re-running Simons here."""
+    nodes = flow.nodes or []
+    edges = flow.edges or []
+    simons_ids: set[str] = set()
+    strategy_ids: set[str] = set()
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        if n.get("type") == "jim-simons-node":
+            simons_ids.add(str(n.get("id")))
+        elif n.get("type") == "strategy-node":
+            strategy_ids.add(str(n.get("id")))
+    if not simons_ids or not strategy_ids:
+        return None
+    wired_simons_ids: set[str] = set()
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        if str(e.get("source")) in simons_ids and str(e.get("target")) in strategy_ids:
+            wired_simons_ids.add(str(e.get("source")))
+    if not wired_simons_ids:
+        return None
+    runs = ((flow.data or {}).get("simonsRun") or {}) if isinstance(flow.data, dict) else {}
+    # Prefer the most recently-run Simons node's recommendation when more
+    # than one is wired (rare). Tie-break: any with a recommended_strategy.
+    best: tuple[str, dict] | None = None
+    for sid in wired_simons_ids:
+        entry = runs.get(sid) or {}
+        rec = entry.get("recommended_strategy")
+        if not isinstance(rec, dict):
+            continue
+        last = entry.get("last_run") or ""
+        if best is None or last > best[0]:
+            best = (last, rec)
+    return best[1] if best else None
 
 
 def _safe_risk_config(state: dict) -> Any | None:

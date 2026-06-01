@@ -21,6 +21,7 @@ from src.agents.nassim_taleb import nassim_taleb_agent
 from src.agents.news_sentiment import news_sentiment_agent
 from src.agents.growth_agent import growth_analyst_agent
 from src.agents.forecaster import forecaster_agent
+from src.agents.jim_simons import jim_simons_agent
 
 # Define analyst configuration - single source of truth
 ANALYST_CONFIG = {
@@ -183,6 +184,21 @@ ANALYST_CONFIG = {
         "agent_func": forecaster_agent,
         "type": "analyst",
         "order": 19,
+    },
+    "jim_simons": {
+        "display_name": "Jim Simons",
+        "description": "The Quant from Renaissance",
+        "investing_style": (
+            "Renaissance/Medallion-style pure quant. No fundamentals, no narratives, no LLM. "
+            "Hunts statistically significant short-horizon patterns in price/volume — mean reversion "
+            "is the bread-and-butter, with relative strength vs SPY as a confirming leg. "
+            "Many small uncorrelated bets (~1% per name), short holding period, vol-scaled sizing, "
+            "no chart stops. Publishes both per-ticker signals to the PM AND a recommended "
+            "StrategyConfig to the Strategy node. Runs on its own cadence independent of the rest of the flow."
+        ),
+        "agent_func": jim_simons_agent,
+        "type": "analyst",
+        "order": 20,
     },
 }
 

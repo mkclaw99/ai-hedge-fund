@@ -219,6 +219,16 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     # 11:00 ET would still see yesterday's close as the latest "now".
     trade_schedule: Optional[str] = None  # 'off' | '5min' | '15min' | 'hourly'
     refresh_prices: Optional[bool] = None
+    # Jim Simons node per-flow config. Cadence is the *signal clock* (a third
+    # clock independent of the analyst and trade clocks); the simons_scheduler
+    # uses it to decide how often to refresh Simons-only signals. Bar
+    # frequency is the resolution of the price bars Simons reads for its
+    # stats (mirrors the forecaster knob). Lookback is the rolling window
+    # over which z-score / vol / RS are computed; defaults to 20 bars when
+    # the request omits it.
+    simons_cadence: Optional[str] = None              # 'off' | '1min' | '5min' | '15min' | 'hourly'
+    simons_bar_frequency: Optional[str] = None        # 'day' | 'hour' | '5min' | '1min'
+    simons_lookback_bars: Optional[int] = None        # default 20, clamped to [10, 500]
     # When True (and the Trading Account node has Auto-trade ON), PM
     # decisions are submitted as MARKET DAY orders on the user's Alpaca
     # PAPER account after the run. Read by graph.py's gate, ALSO defined
@@ -252,6 +262,23 @@ class HedgeFundRequest(BaseHedgeFundRequest):
             return self.start_date
         end = self.end_date or datetime.now().strftime("%Y-%m-%d")
         return (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=90)).strftime("%Y-%m-%d")
+
+
+class SimonsRefreshRequest(BaseModel):
+    """POST body for ``/simons/refresh`` — run the Jim Simons analyst only
+    (no other agents, no PM, no LLM). Mirrors ForecasterRefreshRequest's
+    shape; cadence travels along so the recommended StrategyConfig that
+    rides back in the response carries the same throttle values as a
+    scheduled tick at the same cadence."""
+    tickers: List[str]
+    flow_id: Optional[int] = None
+    end_date: Optional[str] = None
+    # Same lexicon as HedgeFundRequest.simons_*; resolved in the agent via
+    # state["metadata"]["request"].
+    simons_cadence: Optional[str] = None
+    simons_bar_frequency: Optional[str] = None
+    simons_lookback_bars: Optional[int] = None
+    api_keys: Optional[Dict[str, str]] = None
 
 
 class ForecasterRefreshRequest(BaseModel):

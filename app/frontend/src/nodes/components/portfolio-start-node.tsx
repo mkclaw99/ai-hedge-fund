@@ -2,6 +2,8 @@ import { useReactFlow, type NodeProps } from '@xyflow/react';
 import { ChevronDown, PieChart, Play, Plus, Square, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
+import { resolveEffectiveStrategy } from '@/lib/effective-strategy';
+
 import { Button } from '@/components/ui/button';
 import { CardContent } from '@/components/ui/card';
 import {
@@ -245,6 +247,10 @@ export function PortfolioStartNode({
       }
     }
 
+    // Effective strategy — Strategy node config or Simons override.
+    // See @/lib/effective-strategy for the resolution rules.
+    const effectiveStrategy = resolveEffectiveStrategy(allNodes, allEdges, reachableNodeIds);
+
     // Check if we're in backtest mode
     if (runMode === 'backtest') {
       // Use the flow connection hook to run the backtest with selected dates
@@ -271,6 +277,7 @@ export function PortfolioStartNode({
         forecaster_prediction_len: forecasterPredictionLen,
         forecaster_bar_frequency: forecasterBarFrequency,
         agent_thinking_budgets: Object.keys(agentThinkingBudgets).length > 0 ? agentThinkingBudgets : undefined,
+        strategy: effectiveStrategy,
         // Pass portfolio positions to backend
         portfolio_positions: portfolioPositions,
       });
@@ -299,6 +306,7 @@ export function PortfolioStartNode({
         start_date: threeMonthsAgo.toISOString().split('T')[0],
         end_date: today.toISOString().split('T')[0],
         initial_cash: parseFloat(initialCash) || 100000,
+        strategy: effectiveStrategy,
         // Pass portfolio positions to backend
         portfolio_positions: portfolioPositions,
       });

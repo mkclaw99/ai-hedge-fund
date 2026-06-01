@@ -14,6 +14,7 @@ from app.backend.routes.tickers import router as tickers_router
 from app.backend.routes.trading import router as trading_router
 from app.backend.routes.derivatives import router as derivatives_router
 from app.backend.routes.forecaster import router as forecaster_router
+from app.backend.routes.simons import router as simons_router
 from app.backend.routes.usage import router as usage_router
 
 # Main API router
@@ -35,3 +36,4 @@ api_router.include_router(tickers_router, tags=["tickers"])
 api_router.include_router(trading_router, tags=["trading"])
 api_router.include_router(derivatives_router, tags=["derivatives"])
 api_router.include_router(forecaster_router, tags=["forecaster"])
+api_router.include_router(simons_router, tags=["simons"])
