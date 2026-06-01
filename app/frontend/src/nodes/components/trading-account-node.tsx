@@ -1,5 +1,5 @@
 import { type NodeProps } from '@xyflow/react';
-import { BarChart3, Loader2, RotateCw, Wallet } from 'lucide-react';
+import { BarChart3, ExternalLink, Loader2, RotateCcw, RotateCw, Wallet } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -7,7 +7,7 @@ import { CardContent } from '@/components/ui/card';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useNodeState } from '@/hooks/use-node-state';
 import { cn } from '@/lib/utils';
-import { getPaperAccount, PaperAccount } from '@/services/trading-api';
+import { getPaperAccount, PaperAccount, resetPaperAccount } from '@/services/trading-api';
 import { type TradingAccountNode as TradingAccountNodeType } from '../types';
 import { NodeShell } from './node-shell';
 import { TradingAccountDetailsDialog } from './trading-account-details-dialog';
@@ -27,6 +27,12 @@ export function TradingAccountNode({ data, selected, id, isConnectable }: NodePr
   const [loading, setLoading] = useState(true);
   const [toggleError, setToggleError] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+
+  // Reset state — pending while the POST is in flight; flash a banner with
+  // either the success line ("Account reset to $100k") or the Alpaca error
+  // reason. Cleared on the next refresh so a stale "OK" doesn't linger.
+  const [resetting, setResetting] = useState(false);
+  const [resetMsg, setResetMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -52,6 +58,55 @@ export function TradingAccountNode({ data, selected, id, isConnectable }: NodePr
       setToggleError(account.reason || 'Alpaca Paper not connected — Auto-trade turned off.');
     }
   }, [autoTrade, account, setAutoTrade]);
+
+  // Reset the paper account back to its $100k starting state. Two-stage by
+  // necessity: Alpaca's /v2/account/actions/reset is documented but returns
+  // 404 for standard Trading API keys (only the Broker API can wipe), so
+  // we (1) try the API first — keeps working automatically if Alpaca ever
+  // re-enables it — and (2) fall back to opening the dashboard's reset page
+  // in a new tab, where the user clicks once and the same operation runs
+  // through Alpaca's own internal path. Auto-trade is flipped OFF either
+  // way so the next PM run doesn't fire orders into a half-state account.
+  const ALPACA_RESET_URL = 'https://app.alpaca.markets/paper/dashboard/overview';
+  const handleReset = useCallback(async () => {
+    const ok = window.confirm(
+      'Reset the Alpaca PAPER account?\n\n' +
+        'This will:\n' +
+        '  • cancel every open order\n' +
+        '  • close every position\n' +
+        '  • reset cash + equity to $100,000\n\n' +
+        'If the in-app reset is unavailable (Alpaca often disables it for ' +
+        'standard API keys), the Alpaca dashboard will open in a new tab — ' +
+        'click the Reset button there.\n\n' +
+        'Auto-trade will be turned OFF. There is no undo.',
+    );
+    if (!ok) return;
+    setAutoTrade(false);
+    setToggleError(null);
+    setResetting(true);
+    setResetMsg(null);
+    try {
+      const r = await resetPaperAccount();
+      if (r.ok) {
+        setResetMsg({ kind: 'ok', text: 'Paper account reset to $100,000.' });
+        await refresh();
+        return;
+      }
+      // Fallback: open the dashboard so the user can do it with one click.
+      // Pop-up blockers may swallow this — surface the URL in the banner
+      // either way so the user can copy it manually if the tab didn't open.
+      const opened = window.open(ALPACA_RESET_URL, '_blank', 'noopener,noreferrer');
+      const reason = r.reason || 'In-app reset unavailable.';
+      setResetMsg({
+        kind: 'err',
+        text: opened
+          ? `${reason} Opened the Alpaca dashboard — click Reset there, then come back and hit Refresh.`
+          : `${reason} Open this in your browser, then hit Refresh: ${ALPACA_RESET_URL}`,
+      });
+    } finally {
+      setResetting(false);
+    }
+  }, [refresh, setAutoTrade]);
 
   const handleToggleClick = useCallback(async () => {
     if (autoTrade) {
@@ -226,7 +281,7 @@ export function TradingAccountNode({ data, selected, id, isConnectable }: NodePr
                   {account?.account_number && (
                     <Row label="Account #" value={account.account_number} muted />
                   )}
-                  <div className="pt-2">
+                  <div className="pt-2 grid grid-cols-2 gap-2">
                     <Button
                       variant="outline"
                       size="sm"
@@ -236,7 +291,46 @@ export function TradingAccountNode({ data, selected, id, isConnectable }: NodePr
                       <BarChart3 className="h-3.5 w-3.5" />
                       Details
                     </Button>
+                    <Tooltip delayDuration={200}>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleReset}
+                          disabled={resetting}
+                          className="nodrag w-full gap-1.5 border-red-500/40 text-red-500 hover:bg-red-500/10 hover:text-red-500"
+                          aria-label="Reset paper account to $100,000"
+                        >
+                          {resetting ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <RotateCcw className="h-3.5 w-3.5" />
+                          )}
+                          {resetting ? 'Resetting…' : 'Reset'}
+                          {!resetting && <ExternalLink className="h-3 w-3 opacity-60" />}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="max-w-xs">
+                        Wipe positions, cancel open orders, reset cash + equity to $100k.
+                        Tries the in-app reset first; if Alpaca has disabled it for your
+                        API keys (common — most paper accounts), opens the dashboard so
+                        you can click Reset there. Auto-trade is turned OFF first.
+                        Confirmation required; there is no undo.
+                      </TooltipContent>
+                    </Tooltip>
                   </div>
+                  {resetMsg && (
+                    <div
+                      className={cn(
+                        'mt-2 rounded-md border px-2 py-1.5 text-xs',
+                        resetMsg.kind === 'ok'
+                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'
+                          : 'border-red-500/40 bg-red-500/10 text-red-500',
+                      )}
+                    >
+                      {resetMsg.text}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

@@ -182,6 +182,50 @@ def place_option_order(api_keys: dict | None, *, symbol_occ: str, side: str, qty
         return {**out, "ok": False, "error": str(e)[:240]}
 
 
+def reset_account(api_keys: dict | None) -> dict:
+    """Reset the PAPER account back to the $100,000 starting balance.
+
+    POSTs to Alpaca's paper-only ``/v2/account/actions/reset`` endpoint —
+    the same action the user can trigger from the Alpaca dashboard's
+    "Reset" button. Wipes positions, cancels open orders, and resets cash
+    and equity to $100k. Hard-coded to the paper host (line 21) so there
+    is no path to a live account.
+
+    Returns ``{ok, reason?}``. Fail-open: missing keys, network blip, or
+    a non-2xx response all return ``ok=False`` with a human-readable
+    reason; the caller surfaces that string to the user instead of
+    crashing the request. Alpaca returns ``200`` with an empty body on
+    success, so a successful return is ``{"ok": True}``.
+
+    Reality check (verified 2026-06-01 against two fresh paper accounts,
+    PA35AJ6HEDN3 and PA3LX5ABCWHF): Alpaca returns **404 across the board**
+    for standard Trading API keys. The dashboard's Reset button goes
+    through a separate Broker-API path that isn't exposed to user keys.
+    The frontend treats 404 as the cue to open the dashboard in a new
+    tab; we keep the service POST in place so a future Alpaca change
+    would Just Work without touching the UI.
+    """
+    h = _headers(api_keys)
+    if not h:
+        return {"ok": False, "reason": "Set ALPACA_PAPER_API_KEY_ID and ALPACA_PAPER_SECRET_KEY in Settings → API Keys."}
+    try:
+        r = requests.post(f"{_PAPER_BASE}/account/actions/reset", headers=h, timeout=20)
+        if r.status_code in (200, 201, 204):
+            return {"ok": True}
+        if r.status_code in (401, 403):
+            return {"ok": False, "reason": "Alpaca rejected the paper credentials (401/403)."}
+        if r.status_code == 404:
+            return {"ok": False, "reason": "Reset endpoint not available for this paper account (404). Use the Alpaca dashboard instead."}
+        try:
+            msg = (r.json() or {}).get("message") or r.text
+        except Exception:
+            msg = r.text
+        return {"ok": False, "reason": f"Alpaca {r.status_code}: {(msg or '')[:200]}"}
+    except Exception as e:
+        logger.warning("alpaca paper /account/actions/reset failed: %s", e)
+        return {"ok": False, "reason": f"Could not reach paper-api: {e}"}
+
+
 def get_latest_prices(api_keys: dict | None, tickers) -> dict:
     """Batch-fetch the latest trade price for each ticker. Returns ``{symbol: price}``
     for symbols Alpaca returned a trade for; others are simply omitted (caller
