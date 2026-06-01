@@ -149,6 +149,49 @@ class WikiMemory:
         """All tickers with a derived page in this wiki (for UI listing)."""
         return sorted(p.stem.upper() for p in self.tickers.glob("*.md"))
 
+    def delete_insights_in_range(self, start_date: str, end_date: str) -> int:
+        """Delete every source insight whose date falls within ``[start, end]``.
+
+        Used by the Strategy node's "Clear wiki for backtest range" button so
+        a backtest re-run on the same date window doesn't see its own prior
+        decisions as track-record. Filenames follow the slug pattern
+        ``{YYYY-MM-DD}-{ticker}-{analyst-slug}.md`` (see ``Insight.slug``)
+        so a string prefix check on the leading 10 characters is enough —
+        no need to parse each file's body.
+
+        Returns the number of files removed. Best-effort: an unparseable
+        filename in the directory is skipped, not raised on. The derived
+        per-ticker / per-analyst pages under ``tickers/`` and ``analysts/``
+        are **not** rewritten here — they re-derive on the next ingest
+        cycle. A user who wants a fully clean slate should also wipe
+        ``tickers/*.md`` and ``analysts/*.md``, but in practice the next
+        backtest re-write fills them back in with fresh content.
+        """
+        from datetime import date as _date
+
+        try:
+            start = _date.fromisoformat(start_date)
+            end = _date.fromisoformat(end_date)
+        except (TypeError, ValueError):
+            return 0
+        if end < start:
+            return 0
+        removed = 0
+        for f in self.sources.glob("*.md"):
+            # Slug = ``YYYY-MM-DD-...``, so the first 10 chars are the date.
+            head = f.stem[:10]
+            try:
+                d = _date.fromisoformat(head)
+            except ValueError:
+                continue
+            if start <= d <= end:
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError:
+                    continue
+        return removed
+
     def lint(self) -> list[str]:
         """Health-check the wiki; return a list of human-readable findings."""
         findings: list[str] = []

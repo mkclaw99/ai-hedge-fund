@@ -137,6 +137,20 @@ class BacktestRequest(BaseHedgeFundRequest):
     # Strategy/Risk Manager configs ride through the same way as /run.
     strategy: Optional[StrategyConfig] = None
     risk_manager: Optional[RiskManagerConfig] = None
+    # Per-day analyst lookback window. Default 252 *calendar* days = ~178
+    # trading days = covers Technicals' largest rolling window (`mom_6m`
+    # uses 126 trading days). The pre-fix hardcoded value was 30 calendar
+    # days = ~22 trading days, which produced NaN for half of Technicals'
+    # indicators and ran the Risk Manager's 30-day rolling vol on too
+    # little data. Configurable so a power user can tighten it for cheaper
+    # backtests where they know the analyst layer can cope.
+    backtest_lookback_days: Optional[int] = 252
+    # Declared so the server-side gate in routes/hedge_fund.py:backtest
+    # can force-False it (defense in depth). The Strategy node's UI
+    # doesn't set this, but a malicious/buggy client could. Backtests
+    # firing live orders against historical signals = nonsense at best,
+    # account damage at worst — gate is non-negotiable.
+    place_paper_orders: Optional[bool] = False
 
 
 class BacktestDayResult(BaseModel):
@@ -205,6 +219,22 @@ class HedgeFundRequest(BaseHedgeFundRequest):
     # 11:00 ET would still see yesterday's close as the latest "now".
     trade_schedule: Optional[str] = None  # 'off' | '5min' | '15min' | 'hourly'
     refresh_prices: Optional[bool] = None
+    # When True (and the Trading Account node has Auto-trade ON), PM
+    # decisions are submitted as MARKET DAY orders on the user's Alpaca
+    # PAPER account after the run. Read by graph.py's gate, ALSO defined
+    # on ForecasterRefreshRequest for the manual-refresh path. Default
+    # off — even paper orders are a real action.
+    #
+    # Originally lived only on ForecasterRefreshRequest. The Tier-1 trade
+    # executor was passing it to HedgeFundRequest(...) and pydantic's
+    # extra="ignore" silently dropped it — so auto-trade ON on a tick
+    # was a no-op until this promotion.
+    place_paper_orders: Optional[bool] = False
+    # Trading Account node's "Starting Budget" — total capital this
+    # account should deploy. BUY/SHORT orders are sized to
+    # min(starting_budget, buying_power) ÷ N_open_actions × (conf/100)
+    # ÷ price. None → run uses the account's buying_power directly.
+    starting_budget: Optional[float] = None
 
     def get_start_date(self) -> str:
         """Resolve the effective start_date for this run.
