@@ -298,6 +298,12 @@ class ForecasterRefreshRequest(BaseModel):
     forecaster_context_len: Optional[int] = None
     forecaster_prediction_len: Optional[int] = None
     forecaster_bar_frequency: Optional[str] = None
+    # Forecaster backbone is keyed off the agent_id prefix. The frontend
+    # node sends its actual id (e.g. ``toto_forecaster_abc123``) so a
+    # Chronos node and a Toto node call the same endpoint but dispatch
+    # to different models. Omitted = legacy Chronos path (pre-Toto wiki
+    # rows + saved flows keep working).
+    agent_id: Optional[str] = None
     # Optional, only needed for the daily-frequency FD path. Intraday
     # goes via yfinance which doesn't need keys.
     api_keys: Optional[Dict[str, str]] = None

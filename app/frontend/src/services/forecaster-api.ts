@@ -11,6 +11,10 @@ export interface ForecasterRefreshRequest {
   forecaster_context_len?: number;
   forecaster_prediction_len?: number;
   forecaster_bar_frequency?: 'day' | 'hour' | '5min' | '1min';
+  // The forecaster node's own id (e.g. `forecaster_abc123` for Chronos,
+  // `toto_forecaster_abc123` for Toto). The backend reads the prefix to
+  // dispatch to the right backbone. Omitted → legacy Chronos path.
+  agent_id?: string;
 }
 
 export interface ForecasterRefreshResponse {

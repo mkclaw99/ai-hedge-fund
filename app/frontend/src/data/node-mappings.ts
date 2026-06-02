@@ -161,12 +161,15 @@ const getNodeTypeDefinitions = async (): Promise<Record<string, NodeTypeDefiniti
 
   const agents = await getAgents();
   
-  // Create agent node definitions. The forecaster and Jim Simons each get
-  // a dedicated node type — the forecaster for its inline fan chart, Simons
-  // for its two-handle fan-out (signal → PM, strategy → Strategy) and its
-  // independent-cadence timer. Every other analyst uses the generic agent-node.
+  // Create agent node definitions. The forecasters and Jim Simons each get
+  // a dedicated node type. Both Chronos-2 (`forecaster`) and Toto-2.0
+  // (`toto_forecaster`) spawn the SAME `forecaster-node` component — the
+  // backbone is encoded in the agent_id prefix and the component reads it
+  // to render the right "Chronos-2" / "Toto-2.0" label. Simons keeps its
+  // own component for the two-handle fan-out + independent-cadence timer.
+  // Every other analyst uses the generic agent-node.
   const agentNodeDefinitions = agents.reduce((acc: Record<string, NodeTypeDefinition>, agent: Agent) => {
-    const nodeType = agent.key === "forecaster"
+    const nodeType = (agent.key === "forecaster" || agent.key === "toto_forecaster")
       ? "forecaster-node"
       : agent.key === "jim_simons"
         ? "jim-simons-node"

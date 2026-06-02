@@ -178,12 +178,27 @@ ANALYST_CONFIG = {
         "order": 18,
     },
     "forecaster": {
-        "display_name": "Time Series Forecaster",
+        "display_name": "Time Series Forecaster (Chronos-2)",
         "description": "Chronos-2 Price Forecaster",
         "investing_style": "Runs Amazon's Chronos-2 foundation model (120M params, encoder-only T5-style) on recent daily closes to produce a probabilistic 10-day price forecast, and maps the q10/q50/q90 fan to a directional signal whose confidence reflects how unanimously the quantiles agree.",
         "agent_func": forecaster_agent,
         "type": "analyst",
         "order": 19,
+    },
+    "toto_forecaster": {
+        "display_name": "Time Series Forecaster (Toto-2.0)",
+        "description": "Toto-2.0 Price Forecaster",
+        "investing_style": (
+            "Runs Datadog's Toto-2.0-313m foundation model (313M-param decoder-only patched transformer, Apache 2.0) "
+            "on recent closes to produce a probabilistic forecast with the same q10/q25/q50/q75/q90 fan as Chronos-2. "
+            "Trained on ~2T points of observability metrics + synthetic data (no public forecasting datasets in "
+            "pretraining), so equity prices are out-of-distribution — useful as an INDEPENDENT second voice next to "
+            "Chronos rather than a replacement. Wire BOTH forecasters into the PM to compare. Requires the optional "
+            "install via scripts/install_toto.sh; falls back to 'unavailable' if missing."
+        ),
+        "agent_func": forecaster_agent,  # same function — dispatches by agent_id
+        "type": "analyst",
+        "order": 22,  # after Simons (20)
     },
     "jim_simons": {
         "display_name": "Jim Simons",

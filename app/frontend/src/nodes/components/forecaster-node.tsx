@@ -2,9 +2,18 @@
 //
 // Inline preview on the node body shows a compact nested-band fan chart;
 // clicking it opens ForecastDetailDialog — a larger two-panel view with
-// axes, hover tooltip, and a confidence-over-time subplot. The forecast
-// is produced by Amazon Chronos-2 (loaded locally from the HuggingFace
-// cache); no LLM picker, no API key.
+// axes, hover tooltip, and a confidence-over-time subplot.
+//
+// Two backbones share this component:
+//   * Amazon Chronos-2 (120M, encoder-only) — the original v1 backbone
+//   * Datadog Toto-2.0 (313M, decoder-only patched transformer) — added in
+//     the second-forecaster PR. Requires the optional install via
+//     scripts/install_toto.sh; without it the node still renders but
+//     refresh shows "unavailable".
+// Selection is keyed off the agent_id prefix (`forecaster_*` vs
+// `toto_forecaster_*`). Sidebar palette spawns one of each. Both produce
+// the same `forecast-data` JSON fence so chart/dialog/rehydrate paths
+// don't fork by backbone.
 //
 // Data path: the backend agent (src/agents/forecaster.py) appends a
 // ```forecast-data``` JSON fence to the per-ticker analysis Markdown
@@ -28,6 +37,24 @@ import { type AgentNode } from '../types';
 import { getStatusColor } from '../utils';
 import { AgentOutputDialog } from './agent-output-dialog';
 import { NodeShell } from './node-shell';
+
+// Backbone detection from the node id. The sidebar palette creates either
+// a `forecaster_xxx` id (Chronos-2) or a `toto_forecaster_xxx` id (Toto-2.0);
+// the prefix carries the backbone choice through. UI labels read this map.
+type Backbone = 'chronos2' | 'toto2';
+function backboneFromId(id: string): Backbone {
+  return id.startsWith('toto_forecaster') ? 'toto2' : 'chronos2';
+}
+const BACKBONE_INFO: Record<Backbone, { label: string; blurb: string }> = {
+  chronos2: {
+    label: 'Chronos-2',
+    blurb: 'Amazon Chronos-2 — 120M-param probabilistic time-series foundation model. Runs locally on cached weights; no API key required.',
+  },
+  toto2: {
+    label: 'Toto-2.0',
+    blurb: 'Datadog Toto-2.0-313m — 313M-param decoder-only patched transformer (Apache 2.0). Trained on observability + synthetic data, so equity prices are out-of-distribution. Requires the optional install via scripts/install_toto.sh.',
+  },
+};
 
 // Chronos-2 hard limits (from the model card): context up to 8192,
 // prediction up to 1024. Sensible defaults match the module constants
@@ -140,6 +167,13 @@ export function ForecasterNode({
   const [isOutputDialogOpen, setIsOutputDialogOpen] = useState(false);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
 
+  // Which backbone this node is wired to. Derived from the node id at
+  // mount time (frontends don't usually rename their own id, so this is
+  // stable for the lifetime of the node — no useMemo needed).
+  const backbone: Backbone = backboneFromId(id);
+  const modelLabel = BACKBONE_INFO[backbone].label;
+  const modelBlurb = BACKBONE_INFO[backbone].blurb;
+
   // Per-node Chronos-2 length config — stored via useNodeState so the
   // Play-trigger node (portfolio-start / stock-analyzer) can read it
   // back via getNodeInternalState when assembling the run request, and
@@ -237,6 +271,7 @@ export function ForecasterNode({
       const resp = await refreshForecaster({
         tickers,
         flow_id: flowIdNumLocal,
+        agent_id: id,  // backend dispatches to the right backbone via prefix
         forecaster_context_len: contextLen,
         forecaster_prediction_len: predictionLen,
         forecaster_bar_frequency: barFrequency,
@@ -293,14 +328,15 @@ export function ForecasterNode({
               </div>
             )}
 
-            {/* Chronos-2 settings — bar frequency picker + context/prediction
+            {/* Backbone settings — bar frequency picker + context/prediction
                 lengths. Length units adapt to the frequency: 256 + 10 at
                 'Hourly' = 256 hours of context, 10-hour forecast. The
                 Daily path runs through the cached provider chain; intraday
                 hits yfinance directly with hard period caps per interval
-                (1m≤7d, 5m≤60d, 1h≤730d). */}
+                (1m≤7d, 5m≤60d, 1h≤730d). Same UI for Chronos and Toto —
+                both honour the same context/prediction/frequency contract. */}
             <TooltipProvider>
-              <div className="text-subtitle text-primary flex items-center gap-1 mt-1">Chronos-2 Settings</div>
+              <div className="text-subtitle text-primary flex items-center gap-1 mt-1">{modelLabel} Settings</div>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <div className="flex flex-col gap-0.5">
@@ -342,7 +378,7 @@ export function ForecasterNode({
                     </div>
                   </TooltipTrigger>
                   <TooltipContent side="top" className="max-w-[260px] text-xs">
-                    Past bars Chronos-2 reads as context. Range {CTX_MIN}–{CTX_MAX}.
+                    Past bars {modelLabel} reads as context. Range {CTX_MIN}–{CTX_MAX}.
                     More context generally improves the forecast but costs a slower
                     forward pass. Intraday frequencies clip to available history
                     (1m≤7d, 5m≤60d, 1h≤730d).
@@ -404,15 +440,15 @@ export function ForecasterNode({
                     <TooltipContent side="top" className="max-w-[240px] text-xs">
                       {tickers.length === 0
                         ? 'Run the flow once to set the tickers, then refresh updates only this node.'
-                        : `Refresh forecast for ${tickers.length} ticker${tickers.length === 1 ? '' : 's'} — runs Chronos-2 only, no other agents.`}
+                        : `Refresh forecast for ${tickers.length} ticker${tickers.length === 1 ? '' : 's'} — runs ${modelLabel} only, no other agents.`}
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
                 <span
                   className="text-[10px] uppercase tracking-wide text-muted-foreground"
-                  title="Amazon Chronos-2 — 120M-param probabilistic time-series foundation model. Runs locally on cached weights; no API key required."
+                  title={modelBlurb}
                 >
-                  Chronos-2
+                  {modelLabel}
                 </span>
               </div>
             </div>
@@ -484,6 +520,7 @@ export function ForecasterNode({
             isRefreshing,
             canRefresh: tickers.length > 0,
             tickerCount: tickers.length,
+            modelLabel,
           }}
         />
       </CardContent>
@@ -591,6 +628,7 @@ interface ChronosControls {
   isRefreshing: boolean;
   canRefresh: boolean;  // false when there are no tickers yet
   tickerCount: number;  // for the tooltip
+  modelLabel: string;   // "Chronos-2" or "Toto-2.0" — drives dialog headers
 }
 
 interface DetailDialogProps {
@@ -642,7 +680,7 @@ function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onT
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-primary text-xl">
             <LineChart className="h-5 w-5" />
-            <span>Chronos-2 Forecast{activeTicker ? ` · ${activeTicker}` : ''}</span>
+            <span>{controls.modelLabel} Forecast{activeTicker ? ` · ${activeTicker}` : ''}</span>
           </DialogTitle>
         </DialogHeader>
         <DialogChronosSettings controls={controls} stale={stale} />
@@ -774,7 +812,7 @@ function DialogChronosSettings({ controls, stale }: { controls: ChronosControls;
     <TooltipProvider>
       <div className="rounded border border-border bg-node/40 p-3">
         <div className="flex items-center justify-between mb-2">
-          <div className="text-xs uppercase tracking-wide text-muted-foreground">Chronos-2 Settings</div>
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">{controls.modelLabel} Settings</div>
           {/* Refresh-this-node-only — same handler the node body uses. */}
           <Tooltip>
             <TooltipTrigger asChild>
@@ -796,7 +834,7 @@ function DialogChronosSettings({ controls, stale }: { controls: ChronosControls;
             <TooltipContent side="bottom" className="max-w-[320px] text-xs">
               {!canRefresh
                 ? 'Run the flow once to set the tickers, then refresh updates only this node.'
-                : `Re-runs Chronos-2 only on the current ${tickerCount} ticker${tickerCount === 1 ? '' : 's'} — no other agents, no PM. Updates the chart in place.`}
+                : `Re-runs ${controls.modelLabel} only on the current ${tickerCount} ticker${tickerCount === 1 ? '' : 's'} — no other agents, no PM. Updates the chart in place.`}
             </TooltipContent>
           </Tooltip>
         </div>
@@ -817,7 +855,7 @@ function DialogChronosSettings({ controls, stale }: { controls: ChronosControls;
             isStale={false}
             tooltip={
               <>
-                Past bars Chronos-2 reads as context. Range {CTX_MIN}–{CTX_MAX}.
+                Past bars {controls.modelLabel} reads as context. Range {CTX_MIN}–{CTX_MAX}.
                 More context generally improves the forecast but costs a slower
                 forward pass. Intraday frequencies clip to available history
                 (1m≤7d, 5m≤60d, 1h≤730d).
