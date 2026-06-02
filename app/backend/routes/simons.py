@@ -37,12 +37,16 @@ router = APIRouter(prefix="/simons")
 
 
 @router.post("/refresh")
-def refresh_simons(req: SimonsRefreshRequest):
+def refresh_simons(req: SimonsRefreshRequest, db: Session = Depends(get_db)):
     """Run Simons over `req.tickers` and return signals + recommended strategy.
 
     Wiki write piggybacks on the flow's wiki path so a reload picks up the
     fresh signals via the same rehydration path the forecaster uses (every
     analyst writes through the same ``ingest_run`` helper).
+
+    Builds a real ``HedgeFundRequest`` so the hypothesis-driven loop's
+    ``call_llm`` chain resolves the model the same way a full flow run
+    would — including the pinned-default fallback from PR #111.
     """
     tickers = [str(t).strip().upper() for t in (req.tickers or []) if t and str(t).strip()]
     if not tickers:
@@ -53,6 +57,55 @@ def refresh_simons(req: SimonsRefreshRequest):
         }
 
     end_date = (req.end_date or date.today().isoformat())[:10]
+
+    # Hydrate API keys from DB if the request didn't carry them — same path
+    # /hedge-fund/run takes. Without this the LLM has no GOOGLE_API_KEY
+    # visible and the agent falls into its pure-numpy fallback.
+    api_keys = dict(req.api_keys or {})
+    if not api_keys:
+        from app.backend.services.api_key_service import ApiKeyService
+        api_keys = ApiKeyService(db).get_api_keys_dict() or {}
+
+    # Build a proper HedgeFundRequest so `call_llm` resolves the model via
+    # the same get_agent_model_config chain a full run uses.
+    from app.backend.models.schemas import AgentModelConfig, GraphNode, HedgeFundRequest
+    from app.backend.services.default_model import apply_default_model_fallback
+
+    # Use a hex suffix instead of "_agent". normalize_analyst_name's
+    # _ID_SUFFIX regex (`_[a-z0-9]{6}$`) strips a 6-char hex run cleanly,
+    # leaving "jim_simons" → "Jim Simons". The literal "_agent" suffix
+    # path collides for Simons specifically because "simons" is exactly 6
+    # letters and matches the *same* random-suffix regex, normalizing the
+    # name to "Jim" and slugging the wiki file as `…-jim.md` instead of
+    # `…-jim-simons.md`. Other analysts (warren_buffett, peter_lynch) are
+    # safe because their tails aren't 6 letters.
+    sim_agent_id = f"jim_simons_{uuid.uuid4().hex[:6]}"
+    agent_models = None
+    if req.model_name and req.model_provider:
+        agent_models = [AgentModelConfig(
+            agent_id=sim_agent_id, model_name=req.model_name, model_provider=req.model_provider,
+        )]
+    agent_thinking_budgets = (
+        {sim_agent_id: req.thinking_budget}
+        if req.thinking_budget in {"off", "low", "medium", "high"} else None
+    )
+    full_req = HedgeFundRequest(
+        tickers=tickers,
+        graph_nodes=[GraphNode(id=sim_agent_id, type="jim-simons-node", data={}, position={"x": 0, "y": 0})],
+        graph_edges=[],
+        agent_models=agent_models,
+        api_keys=api_keys,
+        flow_id=req.flow_id,
+        end_date=end_date,
+        simons_cadence=req.simons_cadence,
+        simons_bar_frequency=req.simons_bar_frequency,
+        simons_lookback_bars=req.simons_lookback_bars,
+        agent_thinking_budgets=agent_thinking_budgets,
+    )
+    # Pinned-default fallback (PR #111): if no per-agent model was sent and
+    # the schema default routes to a keyless provider, sub in the pinned one.
+    apply_default_model_fallback(full_req, db)
+
     state = {
         "messages": [],
         "data": {
@@ -62,13 +115,13 @@ def refresh_simons(req: SimonsRefreshRequest):
         },
         "metadata": {
             "show_reasoning": False,
-            "request": req,
-            "api_keys": req.api_keys or {},
+            "request": full_req,
+            "api_keys": api_keys,
         },
     }
 
     try:
-        jim_simons_agent(state, agent_id="jim_simons_agent")
+        jim_simons_agent(state, agent_id=sim_agent_id)
     except Exception as exc:
         logger.exception("simons refresh failed")
         return {
@@ -78,12 +131,12 @@ def refresh_simons(req: SimonsRefreshRequest):
             "error": str(exc),
         }
 
-    signals = state["data"].get("analyst_signals", {}).get("jim_simons_agent", {})
+    signals = state["data"].get("analyst_signals", {}).get(sim_agent_id, {})
 
     try:
         run_id = uuid.uuid4().hex[:8]
         ingest_run(
-            {"jim_simons_agent": signals},
+            {sim_agent_id: signals},
             end_date=end_date,
             run_id=run_id,
             root=flow_root(f"flow-{req.flow_id}") if req.flow_id is not None else None,

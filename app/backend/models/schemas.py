@@ -266,19 +266,25 @@ class HedgeFundRequest(BaseHedgeFundRequest):
 
 class SimonsRefreshRequest(BaseModel):
     """POST body for ``/simons/refresh`` — run the Jim Simons analyst only
-    (no other agents, no PM, no LLM). Mirrors ForecasterRefreshRequest's
-    shape; cadence travels along so the recommended StrategyConfig that
-    rides back in the response carries the same throttle values as a
-    scheduled tick at the same cadence."""
+    (no other agents, no PM). Cadence travels along so the recommended
+    StrategyConfig that rides back in the response carries the same
+    throttle values as a scheduled tick at the same cadence.
+
+    Per-agent model + thinking budget are carried so the hypothesis-driven
+    loop runs the LLM the user picked on the node. Without them the agent
+    falls into the pinned-default chain (and then the pure-numpy fallback
+    if nothing's reachable)."""
     tickers: List[str]
     flow_id: Optional[int] = None
     end_date: Optional[str] = None
-    # Same lexicon as HedgeFundRequest.simons_*; resolved in the agent via
-    # state["metadata"]["request"].
     simons_cadence: Optional[str] = None
     simons_bar_frequency: Optional[str] = None
     simons_lookback_bars: Optional[int] = None
     api_keys: Optional[Dict[str, str]] = None
+    # LLM model + thinking budget for the hypothesis loop.
+    model_name: Optional[str] = None
+    model_provider: Optional[ModelProvider] = None
+    thinking_budget: Optional[str] = None  # off | low | medium | high | dynamic
 
 
 class ForecasterRefreshRequest(BaseModel):

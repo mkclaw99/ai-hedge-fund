@@ -1,7 +1,8 @@
 // Client for /simons/refresh and /simons/tick — mirrors forecaster-api.ts.
-// Runs the Jim Simons analyst only (no other agents, no PM, no LLM); used
-// by the node body's "Refresh now" button so the user can re-run Simons
-// without firing the whole flow.
+// Runs the Jim Simons analyst standalone (no other agents, no PM); used by
+// the node body's "Refresh now" button so the user can re-run Simons
+// without firing the whole flow. Simons now runs an LLM hypothesis loop,
+// so the model selection rides along.
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001';
 
@@ -12,6 +13,12 @@ export interface SimonsRefreshRequest {
   simons_cadence?: 'off' | '1min' | '5min' | '15min' | 'hourly';
   simons_bar_frequency?: 'day' | 'hour' | '5min' | '1min';
   simons_lookback_bars?: number;
+  // LLM picker + Gemini thinking budget for the hypothesis loop. Without
+  // these the backend falls into the pinned-default chain (and then the
+  // pure-numpy fallback if nothing is reachable at all).
+  model_name?: string;
+  model_provider?: string;
+  thinking_budget?: 'off' | 'low' | 'medium' | 'high' | 'dynamic';
 }
 
 // Shape matches StrategyConfig (snake_case) so the Strategy node can render
@@ -38,6 +45,12 @@ export interface SimonsSignal {
   signal: 'bullish' | 'bearish' | 'neutral';
   confidence: number;
   reasoning: string;
+  // Full hypothesis-loop trace — present when the LLM ran (the PR-#109 cut
+  // emitted a different `simons` summary; both shapes survive in the wiki
+  // and the dialog tolerates either).
+  simons_trace?: SimonsTrace;
+  // Legacy v1 shape — pre-hypothesis-loop. Kept for back-compat against
+  // wiki rows written before this PR.
   simons?: {
     z_score: number;
     realized_vol_pct: number;
@@ -46,6 +59,43 @@ export interface SimonsSignal {
     frequency: string;
     threshold: number;
   };
+}
+
+// One hypothesis the LLM proposed for a ticker.
+export interface ProposedHypothesis {
+  name: string;
+  rationale: string;
+}
+
+// One hypothesis test result (deterministic).
+export interface HypothesisTestResult {
+  name: string;
+  rationale: string;
+  passed: boolean;
+  value: number | null;
+  threshold: number | null;
+  detail: string;
+}
+
+// The full per-ticker trace as the backend assembles it. Matches the
+// shape inside the ```simons-trace fenced JSON in the wiki reasoning.
+export interface SimonsTrace {
+  ticker: string;
+  as_of: string;
+  frequency: string;
+  lookback_bars: number;
+  context: Record<string, any>;
+  hypotheses_proposed: ProposedHypothesis[];
+  tests: HypothesisTestResult[];
+  adjudication: {
+    signal: string;
+    confidence: number;
+    winning_hypothesis: string | null;
+    reasoning: string;
+  };
+  skipped_llm_adjudicate: boolean;
+  // Set on fallback paths (LLM totally unreachable) — the trace is minimal.
+  fallback?: boolean;
 }
 
 export interface SimonsRefreshResponse {
