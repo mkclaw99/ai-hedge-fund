@@ -14,22 +14,32 @@
 // node is wired upstream (Stock Input or Portfolio Input). Per the user's
 // "Pull from connected input node only" choice. The "Refresh now" button
 // reads tickers from the same upstream node before firing /simons/refresh.
+//
+// The signal generation is now LLM-driven via a hypothesis-test-adjudicate
+// loop (see src/agents/jim_simons.py for the architecture). The model picker
+// below selects which LLM runs the proposer + adjudicator stages. Without
+// a model picked, the backend falls into the pinned-default chain (and then
+// the pure-numpy fallback if nothing is reachable at all).
 
 import { useReactFlow, type NodeProps } from '@xyflow/react';
-import { Brain, ExternalLink, Loader2, RefreshCw, Sigma } from 'lucide-react';
+import { Brain, ExternalLink, Loader2, Maximize2, RefreshCw, Sigma } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { CardContent } from '@/components/ui/card';
+import { ModelSelector } from '@/components/ui/llm-selector';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
+import { getDefaultModel, getModels, LanguageModel } from '@/data/models';
 import { getNodeInternalState, useNodeState } from '@/hooks/use-node-state';
 import { cn } from '@/lib/utils';
 import { getFlowMemory } from '@/services/memory-api';
 import { fireSimonsTick, refreshSimons, type SimonsRecommendedStrategy, type SimonsSignal } from '@/services/simons-api';
 import { type JimSimonsNode } from '../types';
 import { getStatusColor } from '../utils';
+import { ThinkingBudgetField } from './agent-node';
 import { NodeShell } from './node-shell';
+import { SimonsTraceDialog } from './simons-trace-dialog';
 
 // Cadence + bar frequency vocabularies — kept in lock-step with the backend
 // so a UI label change here doesn't silently fall out of sync with the
@@ -64,7 +74,7 @@ export function JimSimonsNode({
   isConnectable,
 }: NodeProps<JimSimonsNode>) {
   const { currentFlowId } = useFlowContext();
-  const { getAgentNodeDataForFlow } = useNodeContext();
+  const { getAgentNodeDataForFlow, setAgentModel, getAgentModel } = useNodeContext();
   const { getNodes, getEdges } = useReactFlow();
 
   // Standard status display, same shape every analyst uses so the play /
@@ -83,6 +93,43 @@ export function JimSimonsNode({
   const [barFrequency, setBarFrequency] = useNodeState<BarFrequency>(id, 'simonsBarFrequency', 'day');
   const [lookbackBars, setLookbackBars] = useNodeState<number>(id, 'simonsLookbackBars', LOOKBACK_DEFAULT);
   const clampLookback = (n: number) => Math.max(LOOKBACK_MIN, Math.min(LOOKBACK_MAX, Math.round(n) || LOOKBACK_DEFAULT));
+
+  // LLM picker for the hypothesis loop. Same shape agent-node + PM use
+  // (selectedModel persisted via useNodeState, availableModels plain useState
+  // per PR #110). The auto-seed on a fresh node falls in below.
+  const [selectedModel, setSelectedModel] = useNodeState<LanguageModel | null>(id, 'selectedModel', null);
+  const [availableModels, setAvailableModels] = useState<LanguageModel[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [models, defaultModel] = await Promise.all([getModels(), getDefaultModel()]);
+        if (cancelled) return;
+        setAvailableModels(models);
+        if (!defaultModel) return;
+        const persisted = getNodeInternalState(id);
+        if (persisted && persisted.selectedModel) return;
+        setSelectedModel(defaultModel);
+      } catch (e) {
+        console.error('Simons: failed to load models', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [id, setSelectedModel]);
+
+  // Push the selected model into nodeContext so the run assembler picks it
+  // up in `agent_models` — same pattern PM uses. Stale-comparison so we don't
+  // dispatch on every render.
+  useEffect(() => {
+    const fid = currentFlowId?.toString() || null;
+    const current = getAgentModel(fid, id);
+    if (selectedModel !== current) setAgentModel(fid, id, selectedModel);
+  }, [selectedModel, id, currentFlowId, setAgentModel, getAgentModel]);
+
+  // Trace dialog state. Opens when the user clicks a per-ticker chip or the
+  // Maximize button next to the Signals header.
+  const [isTraceOpen, setIsTraceOpen] = useState(false);
+  const [activeTraceTicker, setActiveTraceTicker] = useState<string | null>(null);
 
   // Local-only state — the freshest signals we just pulled and the
   // recommended strategy mirror. These also survive scheduler ticks via
@@ -166,6 +213,7 @@ export function JimSimonsNode({
             signal: row.signal as 'bullish' | 'bearish' | 'neutral',
             confidence: Number(row.confidence) || 0,
             reasoning: row.reasoning || '',
+            simons_trace: extractTraceFromReasoning(row.reasoning || ''),
           };
         }
         if (Object.keys(next).length) setLiveSignals(next);
@@ -185,12 +233,19 @@ export function JimSimonsNode({
     }
     setIsRefreshing(true);
     try {
+      // Read the per-node thinking budget out of useNodeState bag directly
+      // (the ThinkingBudgetField below reads/writes it via useNodeState too).
+      const persisted = (getNodeInternalState(id) as any) || {};
+      const thinkingBudget = persisted.thinkingBudget;
       const resp = await refreshSimons({
         tickers: upstreamTickers,
         flow_id: flowIdNum ?? undefined,
         simons_cadence: cadence,
         simons_bar_frequency: barFrequency,
         simons_lookback_bars: lookbackBars,
+        model_name: selectedModel?.model_name,
+        model_provider: selectedModel?.provider,
+        thinking_budget: ['off', 'low', 'medium', 'high'].includes(thinkingBudget) ? thinkingBudget : undefined,
       });
       if (resp.error) {
         setRefreshError(resp.error);
@@ -204,7 +259,10 @@ export function JimSimonsNode({
     } finally {
       setIsRefreshing(false);
     }
-  }, [isRefreshing, upstreamTickers, flowIdNum, cadence, barFrequency, lookbackBars, setRecommendedStrategy, setLastRefreshAt]);
+  }, [
+    isRefreshing, upstreamTickers, flowIdNum, cadence, barFrequency, lookbackBars,
+    selectedModel, id, setRecommendedStrategy, setLastRefreshAt,
+  ]);
 
   // Fire a backend scheduled-tick on demand — useful when the user wants
   // to see the wiki + persistence path fire (the /refresh path bypasses
@@ -231,6 +289,7 @@ export function JimSimonsNode({
           signal: row.signal as 'bullish' | 'bearish' | 'neutral',
           confidence: Number(row.confidence) || 0,
           reasoning: row.reasoning || '',
+          simons_trace: extractTraceFromReasoning(row.reasoning || ''),
         };
       }
       if (Object.keys(next).length) setLiveSignals(next);
@@ -323,6 +382,33 @@ export function JimSimonsNode({
                     <div className="text-muted-foreground">{upstreamTickers.length} ticker{upstreamTickers.length === 1 ? '' : 's'}:</div>
                     <div className="whitespace-pre-wrap break-words">{upstreamTickers.join(', ')}</div>
                   </div>
+                )}
+              </div>
+
+              {/* LLM picker. The hypothesis loop runs two LLM calls per
+                  ticker (propose + adjudicate). Without a model picked the
+                  backend falls into the pinned-default chain (and then the
+                  pure-numpy fallback if nothing's reachable). */}
+              <div className="flex flex-col gap-1">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="text-subtitle text-primary">Model (hypothesis loop)</div>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="max-w-xs">
+                    The LLM that runs Simons's propose + adjudicate stages. Pure-numpy
+                    tests run regardless. Leave on Auto to inherit the pinned default
+                    (Settings → Models → ★). Without ANY model reachable, Simons falls
+                    back to its rule-based behaviour (z-score &gt; 2σ → fire).
+                  </TooltipContent>
+                </Tooltip>
+                <ModelSelector
+                  models={availableModels}
+                  value={selectedModel?.model_name || ''}
+                  onChange={setSelectedModel}
+                  placeholder="Auto"
+                />
+                {selectedModel?.provider === 'Google' && (
+                  <ThinkingBudgetField id={id} />
                 )}
               </div>
 
@@ -466,14 +552,34 @@ export function JimSimonsNode({
                 </div>
               </div>
 
-              {/* Signals readout */}
+              {/* Signals readout. Click a ticker row → open the trace
+                  dialog scoped to that ticker. Top-right Maximize opens
+                  the dialog at the first ticker. */}
               <div className="flex flex-col gap-1">
-                <div className="text-subtitle text-primary">Signals</div>
+                <div className="text-subtitle text-primary flex items-center justify-between">
+                  <span>Signals</span>
+                  {tickerCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const first = Object.keys(liveSignals)[0];
+                        setActiveTraceTicker(first);
+                        setIsTraceOpen(true);
+                      }}
+                      title="Open full trace"
+                      className="flex items-center justify-center h-5 w-5 rounded border border-border text-muted-foreground hover:text-foreground hover:border-primary/40"
+                    >
+                      <Maximize2 className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
                 {tickerCount === 0 ? (
                   <div className="rounded border border-border border-dashed px-2 py-2 text-xs text-muted-foreground text-center">
                     {upstreamTickers.length === 0
                       ? 'Connect an input node to see signals.'
-                      : 'No signals yet — click Refresh now.'}
+                      : status === 'COMPLETE'
+                        ? 'Run complete — no ticker crossed any hypothesis threshold (no entry).'
+                        : 'No signals yet — click Refresh now.'}
                   </div>
                 ) : (
                   <div className="flex flex-col gap-1 max-h-40 overflow-y-auto pr-1">
@@ -481,19 +587,32 @@ export function JimSimonsNode({
                       const dot = sig.signal === 'bullish' ? 'bg-emerald-500'
                                 : sig.signal === 'bearish' ? 'bg-red-500'
                                 : 'bg-gray-500';
+                      // Prefer the new hypothesis-loop trace's winning name;
+                      // fall back to the legacy z-score summary if the row
+                      // is from before the loop existed.
+                      const winning = sig.simons_trace?.adjudication?.winning_hypothesis;
                       const z = sig.simons?.z_score;
+                      const subtitle = winning
+                        ? `via ${winning}`
+                        : z != null ? `z=${z.toFixed(2)}σ` : '';
                       return (
-                        <div key={ticker} className="flex items-center justify-between gap-2 text-xs tabular-nums">
+                        <button
+                          key={ticker}
+                          type="button"
+                          onClick={() => { setActiveTraceTicker(ticker); setIsTraceOpen(true); }}
+                          className="nodrag flex items-center justify-between gap-2 text-xs tabular-nums rounded px-1.5 py-1 hover:bg-node/60 text-left"
+                          title={sig.simons_trace ? 'Click for full trace' : 'No structured trace (pre-hypothesis-loop or fallback)'}
+                        >
                           <div className="flex items-center gap-2 min-w-0">
                             <span className={cn('h-2 w-2 rounded-full', dot)} />
                             <span className="font-medium">{ticker}</span>
                             <span className="text-muted-foreground capitalize">{sig.signal}</span>
+                            {subtitle && <span className="text-[10px] text-muted-foreground truncate">{subtitle}</span>}
                           </div>
                           <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-                            {z != null && <span>z={z.toFixed(2)}σ</span>}
                             <span>{sig.confidence}%</span>
                           </div>
-                        </div>
+                        </button>
                       );
                     })}
                   </div>
@@ -523,6 +642,29 @@ export function JimSimonsNode({
           </div>
         </CardContent>
       </NodeShell>
+      <SimonsTraceDialog
+        isOpen={isTraceOpen}
+        onOpenChange={setIsTraceOpen}
+        tickers={Object.keys(liveSignals)}
+        activeTicker={activeTraceTicker}
+        onTickerChange={setActiveTraceTicker}
+        signalsByTicker={liveSignals}
+      />
     </TooltipProvider>
   );
+}
+
+// Extract the ```simons-trace fenced JSON out of a wiki-stored reasoning
+// markdown blob. Returns undefined when no trace fence is present (e.g.
+// PR-#109 era rows or fallback signals). Same idiom Forecaster uses.
+const SIMONS_TRACE_FENCE_RE = /```simons-trace\s*\n([\s\S]*?)\n```/;
+function extractTraceFromReasoning(md: string | null | undefined) {
+  if (!md) return undefined;
+  const m = md.match(SIMONS_TRACE_FENCE_RE);
+  if (!m) return undefined;
+  try {
+    return JSON.parse(m[1]);
+  } catch {
+    return undefined;
+  }
 }

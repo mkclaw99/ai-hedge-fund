@@ -151,22 +151,65 @@ def _run_simons_sync(
     bar_frequency: str | None,
     lookback_bars: int | None,
     flow_id: int | None,
+    agent_id: str,
+    model_name: str | None,
+    model_provider: str | None,
+    thinking_budget: str | None,
 ) -> dict[str, Any]:
     """Synchronous Simons run + wiki write. Wrapped in run_in_executor by
-    the async caller because the agent does blocking yfinance HTTP calls."""
-    # Local import to keep cold-start cheap and avoid pulling pydantic models
-    # into the scheduler's import path.
+    the async caller because the agent does both blocking yfinance HTTP calls
+    AND a (now LLM-driven) hypothesis loop.
+
+    Builds a real ``HedgeFundRequest`` (not a SimpleNamespace) so the
+    agent's ``call_llm`` path resolves the model via the standard
+    ``get_agent_model_config`` machinery — same as a full flow run. Model
+    + thinking budget come from the Simons node's ``internal_state`` and
+    are keyed to the node's actual id so per-node selection is honoured.
+    """
+    # Local imports to keep cold-start cheap and avoid pulling pydantic into
+    # the scheduler's import path until we actually run a tick.
     from src.agents.jim_simons import jim_simons_agent, recommended_strategy_for_cadence
     from src.memory.ingest import flow_root, ingest_run
+    from app.backend.models.schemas import (
+        AgentModelConfig, GraphNode, HedgeFundRequest,
+    )
+    from src.llm.models import ModelProvider
 
-    # Build a minimal request-like object so the agent's _resolve_* getattr
-    # calls find the right fields. SimpleNamespace keeps it duck-typed
-    # without bringing pydantic in.
-    from types import SimpleNamespace
-    req = SimpleNamespace(
+    # Per-agent model entry. When the node has nothing picked we leave the
+    # entry off entirely, which lets the standard request-level fallback
+    # (and the apply_default_model_fallback path) substitute the pinned
+    # default — same UX as a freshly-dropped PM with no model picked.
+    agent_models: list[AgentModelConfig] | None = None
+    if model_name and model_provider:
+        try:
+            agent_models = [AgentModelConfig(
+                agent_id=agent_id,
+                model_name=model_name,
+                model_provider=ModelProvider(model_provider),
+            )]
+        except ValueError:
+            # Unknown provider in DB state — fall back to no per-agent entry.
+            agent_models = None
+
+    # Per-agent thinking-budget map. Same shape the standard flow uses
+    # (`{agent_id: 'off'|'low'|'medium'|'high'|'dynamic'}`). Skipped when
+    # the node has no thinking budget set or it's the model's default.
+    agent_thinking_budgets: dict[str, str] | None = None
+    if thinking_budget and thinking_budget in {"off", "low", "medium", "high"}:
+        agent_thinking_budgets = {agent_id: thinking_budget}
+
+    request = HedgeFundRequest(
+        tickers=tickers,
+        graph_nodes=[GraphNode(id=agent_id, type="jim-simons-node", data={}, position={"x": 0, "y": 0})],
+        graph_edges=[],
+        agent_models=agent_models,
+        api_keys=api_keys or {},
+        flow_id=flow_id,
+        end_date=end_date,
         simons_cadence=cadence,
         simons_bar_frequency=bar_frequency,
         simons_lookback_bars=lookback_bars,
+        agent_thinking_budgets=agent_thinking_budgets,
     )
 
     state: dict[str, Any] = {
@@ -178,19 +221,23 @@ def _run_simons_sync(
         },
         "metadata": {
             "show_reasoning": False,
-            "request": req,
+            "request": request,
             "api_keys": api_keys or {},
         },
     }
-    jim_simons_agent(state, agent_id="jim_simons_agent")
-    signals = state["data"].get("analyst_signals", {}).get("jim_simons_agent", {})
+    jim_simons_agent(state, agent_id=agent_id)
+    signals = state["data"].get("analyst_signals", {}).get(agent_id, {})
 
     # Persist signals to the flow's wiki so the PM sees them on its next
     # trade tick. Same shape ingest_run accepts for any analyst.
     try:
         run_id = uuid.uuid4().hex[:8]
+        # Wiki rows are keyed by the analyst's normalized name, which comes
+        # from the agent_id (jim_simons_<suffix> → "Jim Simons"). Using the
+        # full node id here is consistent with how create_graph keys things
+        # for a real flow run; ingest_run handles the normalization.
         ingest_run(
-            {"jim_simons_agent": signals},
+            {agent_id: signals},
             end_date=end_date,
             run_id=run_id,
             root=flow_root(f"flow-{flow_id}") if flow_id is not None else None,
@@ -277,6 +324,15 @@ async def execute_simons_tick(
                 lookback_bars = int(internal_state.get("simonsLookbackBars")) if internal_state.get("simonsLookbackBars") else None
             except (TypeError, ValueError):
                 lookback_bars = None
+            # LLM model + thinking budget — read from the same useNodeState
+            # bag the canvas writes to. Both default to None, in which case
+            # the agent's apply_default_model_fallback / call_llm chain picks
+            # the pinned default (or falls into the pure-numpy fallback if
+            # no LLM is reachable at all).
+            selected_model = internal_state.get("selectedModel") or {}
+            model_name = selected_model.get("model_name") if isinstance(selected_model, dict) else None
+            model_provider = selected_model.get("provider") if isinstance(selected_model, dict) else None
+            thinking_budget = internal_state.get("thinkingBudget") or None
 
             try:
                 loop = asyncio.get_running_loop()
@@ -290,6 +346,10 @@ async def execute_simons_tick(
                         bar_frequency=bar_frequency,
                         lookback_bars=lookback_bars,
                         flow_id=flow_id,
+                        agent_id=node_id,
+                        model_name=model_name,
+                        model_provider=model_provider,
+                        thinking_budget=thinking_budget,
                     ),
                 )
                 sig_count = len(result.get("signals") or {})
