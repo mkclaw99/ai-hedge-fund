@@ -4,23 +4,27 @@
 // clicking it opens ForecastDetailDialog — a larger two-panel view with
 // axes, hover tooltip, and a confidence-over-time subplot.
 //
-// Two backbones share this component:
-//   * Amazon Chronos-2 (120M, encoder-only) — the original v1 backbone
-//   * Datadog Toto-2.0 (313M, decoder-only patched transformer) — added in
-//     the second-forecaster PR. Requires the optional install via
-//     scripts/install_toto.sh; without it the node still renders but
-//     refresh shows "unavailable".
-// Selection is keyed off the agent_id prefix (`forecaster_*` vs
-// `toto_forecaster_*`). Sidebar palette spawns one of each. Both produce
-// the same `forecast-data` JSON fence so chart/dialog/rehydrate paths
-// don't fork by backbone.
+// One canvas node, two backbones. The Backbones multi-select on the node
+// body chooses which backend backbones the run/refresh dispatches to:
+//   * Amazon Chronos-2 (120M, encoder-only) — default
+//   * Datadog Toto-2.0 (313M, decoder-only patched transformer) — optional
+//     install via scripts/install_toto.sh; unselected by default
+// Settings (bar frequency, context, prediction) are shared across the
+// selected backbones, so both fans always sit on the same x-axis. When
+// both are selected the chart overlays the second fan; when only one is
+// selected the chart shows a single fan. The PM still sees two analyst
+// names ("Forecaster" and "Toto Forecaster") in the wiki — the
+// per-backbone agent_ids `forecaster_<suffix>` and
+// `toto_forecaster_<suffix>` are synthesised from the canvas node's
+// suffix at run/refresh time. Legacy `toto_forecaster_*` canvas ids
+// from two-node flows keep working: they default to backbones=['toto2'].
 //
 // Data path: the backend agent (src/agents/forecaster.py) appends a
 // ```forecast-data``` JSON fence to the per-ticker analysis Markdown
 // that already rides the SSE 'analysis' channel. We parse it out of the
 // per-ticker messages stored in node-context — no SSE schema change.
 
-import { type NodeProps, useNodes, useReactFlow } from '@xyflow/react';
+import { type NodeProps } from '@xyflow/react';
 import { LineChart, Loader2, Maximize2, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -29,23 +33,24 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
-import { getNodeInternalState, setNodeInternalState, useNodeState } from '@/hooks/use-node-state';
+import { useNodeState } from '@/hooks/use-node-state';
 import { cn } from '@/lib/utils';
 import { refreshForecaster } from '@/services/forecaster-api';
 import { getFlowMemory } from '@/services/memory-api';
 import { type AgentNode } from '../types';
-import { getStatusColor } from '../utils';
+import { type NodeStatus, getStatusColor } from '../utils';
 import { AgentOutputDialog } from './agent-output-dialog';
 import { NodeShell } from './node-shell';
 
-// Backbone detection from the node id. The sidebar palette creates either
-// a `forecaster_xxx` id (Chronos-2) or a `toto_forecaster_xxx` id (Toto-2.0);
-// the prefix carries the backbone choice through. UI labels read this map.
-type Backbone = 'chronos2' | 'toto2';
-function backboneFromId(id: string): Backbone {
-  return id.startsWith('toto_forecaster') ? 'toto2' : 'chronos2';
-}
-const BACKBONE_INFO: Record<Backbone, { label: string; blurb: string }> = {
+// Backbone identifiers. One canvas node can run any non-empty subset of
+// these — the user toggles them via the Backbones multi-select on the
+// node body. The order in BACKBONE_ORDER drives which fan is "primary"
+// (drawn solid, drives ticker list) and which is "overlay" (dashed,
+// trimmed to primary's horizon) when both are selected: chronos2 is
+// primary when present, toto2 is the overlay.
+type BackboneId = 'chronos2' | 'toto2';
+const BACKBONE_ORDER: BackboneId[] = ['chronos2', 'toto2'];
+const BACKBONE_INFO: Record<BackboneId, { label: string; blurb: string }> = {
   chronos2: {
     label: 'Chronos-2',
     blurb: 'Amazon Chronos-2 — 120M-param probabilistic time-series foundation model. Runs locally on cached weights; no API key required.',
@@ -54,6 +59,34 @@ const BACKBONE_INFO: Record<Backbone, { label: string; blurb: string }> = {
     label: 'Toto-2.0',
     blurb: 'Datadog Toto-2.0-313m — 313M-param decoder-only patched transformer (Apache 2.0). Trained on observability + synthetic data, so equity prices are out-of-distribution. Requires the optional install via scripts/install_toto.sh.',
   },
+};
+// The canvas-node id is either `forecaster_<suffix>` (new palette) or
+// `toto_forecaster_<suffix>` (legacy two-node flows). Strip either prefix
+// to get the per-flow suffix, then derive each backbone's backend
+// ``agent_id``. The graph builder reads the prefix to pick the actual
+// model (see src/agents/forecaster.py::_resolve_backbone), so a single
+// canvas node maps to two distinct backend runs when both backbones are
+// selected.
+function canvasSuffix(id: string): string {
+  return id.replace(/^toto_forecaster_|^forecaster_/, '');
+}
+function agentIdFor(canvasId: string, b: BackboneId): string {
+  const suffix = canvasSuffix(canvasId);
+  return b === 'toto2' ? `toto_forecaster_${suffix}` : `forecaster_${suffix}`;
+}
+// Default backbones for a canvas-node id. New palette spawns
+// `forecaster_*` → chronos2 only. Legacy `toto_forecaster_*` from
+// two-node flows → toto2 only, so removing the palette entry doesn't
+// silently change the meaning of saved flows.
+function defaultBackbonesForId(id: string): BackboneId[] {
+  return id.startsWith('toto_forecaster') ? ['toto2'] : ['chronos2'];
+}
+// Wiki-row analyst-name aliases. ``normalize_analyst_name`` strips
+// ``_agent`` / the random suffix and title-cases; the "Time Series
+// Forecaster" alias is kept for pre-rename rows from earlier wiki dumps.
+const ALIASES_BY_BACKBONE: Record<BackboneId, string[]> = {
+  chronos2: ['forecaster', 'time series forecaster'],
+  toto2: ['toto forecaster'],
 };
 
 // Chronos-2 hard limits (from the model card): context up to 8192,
@@ -153,315 +186,204 @@ export function ForecasterNode({
 }: NodeProps<AgentNode>) {
   const { currentFlowId } = useFlowContext();
   const { getAgentNodeDataForFlow, updateAgentNode } = useNodeContext();
-  // Needed to find the OTHER forecaster node on the canvas for the
-  // overlay (Chronos sees Toto, Toto sees Chronos) and for settings
-  // mirroring (changes propagate to all forecaster nodes so both
-  // backbones run on identical context/prediction/frequency — overlay
-  // requires matching bar frequency to avoid x-axis ambiguity).
-  // `useNodes()` is the reactive variant (re-fires when nodes are
-  // added/removed); `getNodes` is the stable getter for setter
-  // callbacks that don't need a render trigger.
-  const liveNodes = useNodes();
-  const { getNodes } = useReactFlow();
-
   const agentNodeData = getAgentNodeDataForFlow(currentFlowId?.toString() || null);
-  const nodeData = agentNodeData[id] || {
-    status: 'IDLE',
-    ticker: null,
-    message: '',
-    messages: [],
-    lastUpdated: 0,
-  };
-  const status = nodeData.status;
-  const isInProgress = status === 'IN_PROGRESS';
   const [isOutputDialogOpen, setIsOutputDialogOpen] = useState(false);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
 
-  // Which backbone this node is wired to. Derived from the node id at
-  // mount time (frontends don't usually rename their own id, so this is
-  // stable for the lifetime of the node — no useMemo needed).
-  const backbone: Backbone = backboneFromId(id);
-  const modelLabel = BACKBONE_INFO[backbone].label;
-  const modelBlurb = BACKBONE_INFO[backbone].blurb;
+  // --- Backbones selection ----------------------------------------------
+  // The user picks any non-empty subset of backbones via the Backbones
+  // multi-select below. Per-backbone backend agent_ids are synthesised
+  // from this canvas id's suffix (see ``agentIdFor`` at top of file), so
+  // the same suffix maps to ``forecaster_<suffix>`` for Chronos-2 and
+  // ``toto_forecaster_<suffix>`` for Toto-2.0. The graph builder in
+  // portfolio-start / stock-analyzer expands this canvas node into one
+  // graph_node per selected backbone at run time.
+  const [backbones, setBackbones] = useNodeState<BackboneId[]>(
+    id, 'forecasterBackbones', defaultBackbonesForId(id),
+  );
+  const toggleBackbone = (b: BackboneId, on: boolean) => {
+    let next: BackboneId[];
+    if (on) {
+      // Re-emit in BACKBONE_ORDER to keep chronos2 as the primary fan
+      // whenever it's selected — overlay ordering matters for the chart
+      // legend and the dashed/solid line assignment.
+      next = BACKBONE_ORDER.filter((x) => x === b || backbones.includes(x));
+    } else {
+      next = backbones.filter((x) => x !== b);
+      if (next.length === 0) return;  // at least one backbone must stay selected
+    }
+    setBackbones(next);
+  };
+  const primaryBackbone: BackboneId = backbones[0] ?? 'chronos2';
+  const overlayBackbone: BackboneId | null = backbones.length > 1 ? backbones[1] : null;
+  const primaryLabel = BACKBONE_INFO[primaryBackbone].label;
+  const overlayLabel = overlayBackbone ? BACKBONE_INFO[overlayBackbone].label : '';
 
-  // Per-node Chronos-2 length config — stored via useNodeState so the
-  // Play-trigger node (portfolio-start / stock-analyzer) can read it
-  // back via getNodeInternalState when assembling the run request, and
-  // so the values survive flow reload via the standard internal_state
-  // restore path.
-  const [contextLen, setContextLenRaw] = useNodeState<number>(id, 'forecasterContextLen', CTX_DEFAULT);
-  const [predictionLen, setPredictionLenRaw] = useNodeState<number>(id, 'forecasterPredictionLen', PRED_DEFAULT);
-  const [barFrequency, setBarFrequencyRaw] = useNodeState<BarFrequency>(id, 'forecasterBarFrequency', 'day');
+  // --- Shared settings --------------------------------------------------
+  // Bar frequency, context-len, prediction-len apply to every selected
+  // backbone in lock-step — both fans must sit on the same x-axis or the
+  // overlay is misleading. Stored in this canvas node's internal_state
+  // and round-tripped to the run-request by the Play-trigger node.
+  const [contextLen, setContextLen] = useNodeState<number>(id, 'forecasterContextLen', CTX_DEFAULT);
+  const [predictionLen, setPredictionLen] = useNodeState<number>(id, 'forecasterPredictionLen', PRED_DEFAULT);
+  const [barFrequency, setBarFrequency] = useNodeState<BarFrequency>(id, 'forecasterBarFrequency', 'day');
   const clampCtx = (n: number) => Math.max(CTX_MIN, Math.min(CTX_MAX, Math.round(n) || CTX_DEFAULT));
   const clampPred = (n: number) => Math.max(PRED_MIN, Math.min(PRED_MAX, Math.round(n) || PRED_DEFAULT));
   const activeFreq = FREQ_OPTIONS.find((o) => o.value === barFrequency) ?? FREQ_OPTIONS[0];
 
-  // The two forecaster backbones (Chronos-2 and Toto-2.0) share a single
-  // settings source — bar frequency, context, prediction. Per-node settings
-  // would let the user pick e.g. 5-min for Chronos and Daily for Toto;
-  // backbones would then write forecasts on incompatible x-axes and the
-  // overlay (PR #114) would suppress itself with a "freq differs" warning,
-  // which is what the user actually hits. The settings stay in each node's
-  // own useNodeState so flow serialization is unchanged; on every write
-  // we mirror the new value into the *other* forecaster node's state via
-  // setNodeInternalState. useNodeState's stateChange listener picks the
-  // mirrored value back up and re-renders the other node's UI in sync.
-  const syncToOtherForecasters = (key: string, value: unknown) => {
-    for (const n of getNodes()) {
-      if (n.type !== 'forecaster-node') continue;
-      if (n.id === id) continue;
-      const cur = getNodeInternalState(n.id) || {};
-      if (cur[key] === value) continue;  // no-op, avoids notifying for unchanged value
-      setNodeInternalState(n.id, { ...cur, [key]: value });
+  // --- Combined node status --------------------------------------------
+  // Each backbone is a separate backend agent_id, so the canvas node's
+  // status is the rollup. In-progress beats error beats complete beats
+  // idle — matches what the user would expect to see if either backbone
+  // is still running.
+  const combinedStatus: NodeStatus = useMemo(() => {
+    const statuses = backbones.map((b) => agentNodeData[agentIdFor(id, b)]?.status || 'IDLE');
+    if (statuses.some((s) => s === 'IN_PROGRESS')) return 'IN_PROGRESS';
+    if (statuses.some((s) => s === 'ERROR')) return 'ERROR';
+    if (statuses.length > 0 && statuses.every((s) => s === 'COMPLETE')) return 'COMPLETE';
+    return 'IDLE';
+  }, [backbones, agentNodeData, id]);
+  const isInProgress = combinedStatus === 'IN_PROGRESS';
+  // Latest status message + ticker from whichever backbone updated most
+  // recently — used for the small "Fetching daily bars (AAPL)" hint
+  // under the status pill.
+  const latestStatusBeacon = useMemo<{ message: string; ticker: string | null }>(() => {
+    let bestTs = 0;
+    let message = '';
+    let ticker: string | null = null;
+    for (const b of backbones) {
+      const d = agentNodeData[agentIdFor(id, b)];
+      if (!d) continue;
+      const ts = d.lastUpdated || 0;
+      if (ts > bestTs) {
+        bestTs = ts;
+        message = d.message || '';
+        ticker = d.ticker || null;
+      }
     }
-  };
-  const setContextLen = (v: number) => {
-    setContextLenRaw(v);
-    syncToOtherForecasters('forecasterContextLen', v);
-  };
-  const setPredictionLen = (v: number) => {
-    setPredictionLenRaw(v);
-    syncToOtherForecasters('forecasterPredictionLen', v);
-  };
-  const setBarFrequency = (v: BarFrequency) => {
-    setBarFrequencyRaw(v);
-    syncToOtherForecasters('forecasterBarFrequency', v);
-  };
+    return { message, ticker };
+  }, [backbones, agentNodeData, id]);
 
-  // Mount-time reconciliation. Three situations need handling:
-  //   1. A second forecaster is dropped after the first. The new one should
-  //      adopt the existing node's settings rather than impose its defaults.
-  //   2. Same as 1 but with the drop order reversed (toto dropped first,
-  //      configured, then chronos dropped on top). The previous version
-  //      forced toto to adopt chronos's defaults here, wiping the user's
-  //      toto config — symmetric handling avoids that.
-  //   3. Legacy flows saved before this sync was wired up may have the two
-  //      nodes' settings out of sync. Needs a deterministic tiebreaker.
-  // Rule: "configured wins, chronos breaks ties." A node is *configured*
-  // when at least one of its three settings differs from the module
-  // defaults. We only adopt FROM a configured neighbour; default-only
-  // neighbours never overwrite anything. If multiple configured candidates
-  // exist (the legacy case 3), the chronos2 node is the source of truth
-  // — it always declines to adopt FROM toto2 when it's already configured
-  // itself, which makes the convergence order-independent across the two
-  // mount effects. Ref-guards keep each mount idempotent past success.
-  const didMountSyncRef = useRef(false);
-  useEffect(() => {
-    if (didMountSyncRef.current) return;
-    const isConfigured = (s: Record<string, unknown> | undefined): boolean => {
-      if (!s) return false;
-      const c = s.forecasterContextLen;
-      const p = s.forecasterPredictionLen;
-      const f = s.forecasterBarFrequency;
-      return (
-        (typeof c === 'number' && c !== CTX_DEFAULT) ||
-        (typeof p === 'number' && p !== PRED_DEFAULT) ||
-        (typeof f === 'string' && f !== 'day')
-      );
-    };
-    const others = getNodes().filter(
-      (n) => n.type === 'forecaster-node' && n.id !== id,
-    );
-    if (others.length === 0) return;  // no others yet; effect re-fires on liveNodes change
-    const configuredOthers = others.filter((n) =>
-      isConfigured(getNodeInternalState(n.id) as Record<string, unknown> | undefined),
-    );
-    if (configuredOthers.length === 0) {
-      // Everyone is at defaults; nothing to adopt. Mark done so we don't
-      // re-evaluate forever as the user moves nodes around.
-      didMountSyncRef.current = true;
-      return;
-    }
-    // Chronos-2 tiebreaker: if I'm chronos2 AND I'm already configured,
-    // I'm authoritative — don't adopt from a (possibly also-configured)
-    // toto2 sibling. This is the legacy case-3 deterministic resolution.
-    const myState = getNodeInternalState(id) as Record<string, unknown> | undefined;
-    if (backbone === 'chronos2' && isConfigured(myState)) {
-      didMountSyncRef.current = true;
-      return;
-    }
-    // Prefer a chronos2 source (legacy case 3); fall back to whatever
-    // configured neighbour exists (handles toto-first / chronos-defaults).
-    const source =
-      configuredOthers.find((n) => backboneFromId(n.id) === 'chronos2') ||
-      configuredOthers[0];
-    const cs = getNodeInternalState(source.id) as Record<string, unknown> | undefined;
-    if (!cs) return;
-    didMountSyncRef.current = true;
-    if (typeof cs.forecasterContextLen === 'number') setContextLenRaw(cs.forecasterContextLen);
-    if (typeof cs.forecasterPredictionLen === 'number') setPredictionLenRaw(cs.forecasterPredictionLen);
-    if (typeof cs.forecasterBarFrequency === 'string') setBarFrequencyRaw(cs.forecasterBarFrequency as BarFrequency);
-    // setters from useNodeState are stable; deps cover liveNodes so the
-    // effect re-fires when a forecaster is added/removed later.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backbone, id, liveNodes]);
-
-  // Live runtime forecasts: {ticker → latest forecast}, newest-first scan
-  // of the SSE message history that NodeContext accumulates during a run.
-  const runtimeForecasts = useMemo<Record<string, ForecastPayload>>(() => {
-    const out: Record<string, ForecastPayload> = {};
-    const msgs = nodeData.messages || [];
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i];
-      if (!m.ticker) continue;
-      if (out[m.ticker]) continue;
-      const fc = extractForecast(m.analysis?.[m.ticker]);
-      if (fc) out[m.ticker] = fc;
+  // --- Per-backbone forecasts ------------------------------------------
+  // Runtime path: scan each selected backbone's agent_id messages for
+  // the forecast-data fence (newest-first, one per ticker).
+  const runtimeByBackbone = useMemo<Record<BackboneId, Record<string, ForecastPayload>>>(() => {
+    const out: Record<BackboneId, Record<string, ForecastPayload>> = { chronos2: {}, toto2: {} };
+    for (const b of BACKBONE_ORDER) {
+      const d = agentNodeData[agentIdFor(id, b)];
+      if (!d) continue;
+      const msgs = d.messages || [];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (!m.ticker) continue;
+        if (out[b][m.ticker]) continue;
+        const fc = extractForecast(m.analysis?.[m.ticker]);
+        if (fc) out[b][m.ticker] = fc;
+      }
     }
     return out;
-  }, [nodeData.messages]);
+  }, [agentNodeData, id]);
 
-  // Wiki-rehydrated forecasts. NodeContext is purged on page reload (see
-  // flow-tab-content.tsx — "Runtime execution data should start fresh"),
-  // but the forecaster persists its full trajectory inside each Insight's
-  // reasoning Markdown via the same `forecast-data` fence. We pull
-  // /memory?flow_id=… on mount and parse the fence out per ticker so the
-  // chart reappears after F5. We also rehydrate the OTHER backbone's
-  // forecasts here in the same pass (cheap — one query, both analyst
-  // names checked) so the overlay survives reload too.
-  const [rehydrated, setRehydrated] = useState<Record<string, ForecastPayload>>({});
-  const [overlayRehydrated, setOverlayRehydrated] = useState<Record<string, ForecastPayload>>({});
+  // Rehydrated path: pull the same fence out of the wiki on mount so the
+  // chart reappears after a page reload. The wiki keeps each backbone's
+  // history under its own analyst name ("Forecaster" / "Toto Forecaster")
+  // even though one canvas node now drives both — preserved for the PM's
+  // track-record continuity. The lookup matches by lowercased name.
+  const [rehydratedByBackbone, setRehydratedByBackbone] = useState<
+    Record<BackboneId, Record<string, ForecastPayload>>
+  >({ chronos2: {}, toto2: {} });
   const flowIdNum = currentFlowId != null ? Number(currentFlowId) : null;
-  // Backbone → wiki analyst-name aliases. The slug after
-  // normalize_analyst_name strips `_agent` and the random suffix, then
-  // title-cases. `forecaster_xxxxxx` → "Forecaster"; `toto_forecaster_xxxxxx`
-  // → "Toto Forecaster". The legacy "Time Series Forecaster" alias is
-  // kept for pre-rename wiki rows.
-  const ownNames = backbone === 'toto2'
-    ? ['toto forecaster']
-    : ['forecaster', 'time series forecaster'];
-  const otherNames = backbone === 'toto2'
-    ? ['forecaster', 'time series forecaster']
-    : ['toto forecaster'];
-  // Stable join so React's dep array on the effect below doesn't see a
-  // new array literal every render and re-fire the fetch.
-  const ownNamesKey = ownNames.join('|');
-  const otherNamesKey = otherNames.join('|');
   useEffect(() => {
     if (flowIdNum == null) return;
     let cancelled = false;
     getFlowMemory(flowIdNum)
       .then((mem) => {
         if (cancelled) return;
-        const ownNext: Record<string, ForecastPayload> = {};
-        const otherNext: Record<string, ForecastPayload> = {};
-        const matches = (a: string | undefined, names: string[]) =>
-          !!a && names.includes(a.toLowerCase());
+        const next: Record<BackboneId, Record<string, ForecastPayload>> = { chronos2: {}, toto2: {} };
         for (const t of mem.tickers || []) {
           for (const row of (t.analysts || [])) {
-            if (matches(row.analyst, ownNames)) {
+            const an = (row.analyst || '').toLowerCase();
+            for (const b of BACKBONE_ORDER) {
+              if (!ALIASES_BY_BACKBONE[b].includes(an)) continue;
               const fc = extractForecast(row?.reasoning);
-              if (fc) ownNext[t.ticker] = fc;
-            } else if (matches(row.analyst, otherNames)) {
-              const fc = extractForecast(row?.reasoning);
-              if (fc) otherNext[t.ticker] = fc;
+              if (fc) next[b][t.ticker] = fc;
             }
           }
         }
-        setRehydrated(ownNext);
-        setOverlayRehydrated(otherNext);
+        setRehydratedByBackbone(next);
       })
       .catch(() => {
-        // Fail-open: no rehydration is the placeholder state, not an error.
+        // Fail-open — empty rehydration is the placeholder state.
       });
     return () => {
       cancelled = true;
     };
-  }, [flowIdNum, ownNamesKey, otherNamesKey]);
+  }, [flowIdNum]);
 
-  // Prefer live runtime data — it's always fresher than what the wiki
-  // has from a prior run. Fall back to rehydrated wiki data when the
-  // runtime stream is empty (post-reload, or before the first run on a
-  // restored flow). Merge per-ticker so a partial new run still surfaces
-  // the latest forecast for tickers it already produced.
-  const forecastsByTicker = useMemo<Record<string, ForecastPayload>>(() => {
-    return { ...rehydrated, ...runtimeForecasts };
-  }, [rehydrated, runtimeForecasts]);
+  // Per-backbone forecasts: runtime overrides rehydrated.
+  const forecastsByBackbone = useMemo<Record<BackboneId, Record<string, ForecastPayload>>>(() => ({
+    chronos2: { ...rehydratedByBackbone.chronos2, ...runtimeByBackbone.chronos2 },
+    toto2: { ...rehydratedByBackbone.toto2, ...runtimeByBackbone.toto2 },
+  }), [rehydratedByBackbone, runtimeByBackbone]);
 
-  // Find the OTHER forecaster node on the canvas (different backbone) and
-  // pull its forecasts in two ways:
-  //
-  //   * Runtime: read its node-context messages and parse the fence — same
-  //     idiom this node uses for itself but via a different node id.
-  //   * Rehydrated: already loaded above in the wiki query that fetched both
-  //     analyst names.
-  //
-  // The runtime path catches the case where the user just clicked Refresh
-  // on the OTHER forecaster — that node's messages update, this node's
-  // overlay updates without needing a wiki round-trip.
-  // `liveNodes` (declared above) drives this memo so adds/removes on the
-  // canvas re-fire it. `getNodes()` from useReactFlow is stable across
-  // renders — depending on it in useMemo would compute once at mount and
-  // never update if the user drops the *other* forecaster later.
-  const otherForecasterId = useMemo<string | null>(() => {
-    for (const n of liveNodes) {
-      if (n.type !== 'forecaster-node') continue;
-      if (n.id === id) continue;
-      if (backboneFromId(n.id) === backbone) continue;  // same backbone, not an overlay candidate
-      return n.id;
+  // Ticker list = union across SELECTED backbones (so toggling backbones
+  // immediately shows/hides tickers that only one of them produced).
+  const tickers = useMemo(() => {
+    const set = new Set<string>();
+    for (const b of backbones) {
+      for (const t of Object.keys(forecastsByBackbone[b])) set.add(t);
     }
-    return null;
-  }, [liveNodes, id, backbone]);
-  const otherBackbone: Backbone = backbone === 'toto2' ? 'chronos2' : 'toto2';
-  const otherForecasterRuntime = useMemo<Record<string, ForecastPayload>>(() => {
-    if (!otherForecasterId) return {};
-    const otherData = agentNodeData[otherForecasterId];
-    if (!otherData) return {};
-    const out: Record<string, ForecastPayload> = {};
-    const msgs = otherData.messages || [];
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i];
-      if (!m.ticker) continue;
-      if (out[m.ticker]) continue;
-      const fc = extractForecast(m.analysis?.[m.ticker]);
-      if (fc) out[m.ticker] = fc;
-    }
-    return out;
-    // agentNodeData is recreated each render by getAgentNodeDataForFlow;
-    // depending on `agentNodeData[otherForecasterId]?.lastUpdated` would be
-    // marginally tighter but isn't worth the readability cost.
-  }, [agentNodeData, otherForecasterId]);
-  const overlayByTicker = useMemo<Record<string, ForecastPayload>>(() => {
-    if (!otherForecasterId) return {};
-    return { ...overlayRehydrated, ...otherForecasterRuntime };
-  }, [otherForecasterId, overlayRehydrated, otherForecasterRuntime]);
-
-  const tickers = useMemo(() => Object.keys(forecastsByTicker).sort(), [forecastsByTicker]);
+    return Array.from(set).sort();
+  }, [backbones, forecastsByBackbone]);
   const [activeTicker, setActiveTicker] = useState<string | null>(null);
   useEffect(() => {
     if (!activeTicker && tickers.length) setActiveTicker(tickers[0]);
     if (activeTicker && tickers.length && !tickers.includes(activeTicker)) setActiveTicker(tickers[0] ?? null);
   }, [tickers, activeTicker]);
 
-  const activeForecast = activeTicker ? forecastsByTicker[activeTicker] : null;
-  // Overlay for the currently-active ticker. Skipped (undefined) when:
-  //   - no other forecaster node on canvas
-  //   - other forecaster hasn't produced for this ticker yet
-  //   - other forecaster's bar frequency differs (overlay would be misleading)
+  const activeForecast = activeTicker ? forecastsByBackbone[primaryBackbone]?.[activeTicker] ?? null : null;
+  const overlayCandidate = (activeTicker && overlayBackbone)
+    ? forecastsByBackbone[overlayBackbone]?.[activeTicker]
+    : undefined;
+  // Suppress the overlay when the two backbones recorded at different bar
+  // frequencies — x-axis comparison would lie. Stale-banner picks it up
+  // in the dialog and tells the user to refresh.
   const activeOverlay = (() => {
-    if (!activeTicker || !otherForecasterId) return undefined;
-    const o = overlayByTicker[activeTicker];
-    if (!o) return undefined;
-    if (activeForecast && o.frequency && activeForecast.frequency && o.frequency !== activeForecast.frequency) {
-      // Different frequencies — overlay would compare 5-min bars vs daily;
-      // x-axis would lie. Skip and surface a notice in the dialog instead.
+    if (!overlayCandidate || !activeForecast) return undefined;
+    if (overlayCandidate.frequency && activeForecast.frequency
+        && overlayCandidate.frequency !== activeForecast.frequency) {
       return undefined;
     }
-    return o;
+    return overlayCandidate;
   })();
-  const overlayFreqMismatch = !!(activeForecast && activeTicker && otherForecasterId
-    && overlayByTicker[activeTicker]
-    && overlayByTicker[activeTicker].frequency
+  const overlayFreqMismatch = !!(
+    activeForecast
+    && overlayCandidate
+    && overlayCandidate.frequency
     && activeForecast.frequency
-    && overlayByTicker[activeTicker].frequency !== activeForecast.frequency);
-  const overlayLabel = BACKBONE_INFO[otherBackbone].label;
+    && overlayCandidate.frequency !== activeForecast.frequency
+  );
 
-  // Stand-alone refresh: POST /forecaster/refresh with the tickers we
-  // already have data for and the current Chronos-2 settings, then
-  // dispatch synthetic Done messages so the chart updates immediately
-  // (same channel SSE-driven runs use). Cheap path: no LLM, no other
-  // analysts, no PM. Disabled while in-flight or when there are no
-  // tickers to refresh (i.e., the node has never had a prior run).
+  // overlayByTicker / forecastsByTicker keep the existing
+  // ForecastDetailDialog contract unchanged — they're flat maps keyed by
+  // ticker, derived from the primary/overlay backbones.
+  const forecastsByTicker = useMemo<Record<string, ForecastPayload>>(
+    () => forecastsByBackbone[primaryBackbone] ?? {},
+    [forecastsByBackbone, primaryBackbone],
+  );
+  const overlayByTicker = useMemo<Record<string, ForecastPayload>>(() => {
+    if (!overlayBackbone) return {};
+    return forecastsByBackbone[overlayBackbone] ?? {};
+  }, [forecastsByBackbone, overlayBackbone]);
+
+  // --- Refresh ----------------------------------------------------------
+  // One Refresh button drives every selected backbone in sequence —
+  // each backbone hits /forecaster/refresh with its own ``agent_id`` so
+  // the backend's prefix-based dispatch picks the right model, and we
+  // mirror the response into the per-backbone NodeContext bucket via
+  // synthetic Done messages (same channel a flow run uses). Sequential
+  // (not parallel) keeps the GPU-bound paths from thrashing — Chronos
+  // and Toto each load a sizeable model.
   const [isRefreshing, setIsRefreshing] = useState(false);
   const flowIdStr = currentFlowId?.toString() || null;
   const handleRefresh = async () => {
@@ -469,31 +391,28 @@ export function ForecasterNode({
     setIsRefreshing(true);
     try {
       const flowIdNumLocal = currentFlowId != null ? Number(currentFlowId) : undefined;
-      const resp = await refreshForecaster({
-        tickers,
-        flow_id: flowIdNumLocal,
-        agent_id: id,  // backend dispatches to the right backbone via prefix
-        forecaster_context_len: contextLen,
-        forecaster_prediction_len: predictionLen,
-        forecaster_bar_frequency: barFrequency,
-      });
-      // Mirror each ticker's reasoning into a synthetic Done message,
-      // same shape NodeContext rehydration uses post-reload. The
-      // existing runtimeForecasts useMemo picks the fence out and the
-      // chart re-renders. ISO timestamp keeps de-duplication honest
-      // across rapid clicks (Date.now is per-call distinct).
       const now = new Date().toISOString();
-      for (const [t, sig] of Object.entries(resp.signals || {})) {
-        if (!sig?.reasoning) continue;
-        updateAgentNode(flowIdStr, id, {
-          timestamp: `${now}#${t}`,
-          message: 'Done',
-          ticker: t,
-          analysis: sig.reasoning,
+      for (const b of backbones) {
+        const aid = agentIdFor(id, b);
+        const resp = await refreshForecaster({
+          tickers,
+          flow_id: flowIdNumLocal,
+          agent_id: aid,
+          forecaster_context_len: contextLen,
+          forecaster_prediction_len: predictionLen,
+          forecaster_bar_frequency: barFrequency,
         });
+        for (const [t, sig] of Object.entries(resp.signals || {})) {
+          if (!sig?.reasoning) continue;
+          updateAgentNode(flowIdStr, aid, {
+            timestamp: `${now}#${b}#${t}`,
+            message: 'Done',
+            ticker: t,
+            analysis: sig.reasoning,
+          });
+        }
+        updateAgentNode(flowIdStr, aid, 'COMPLETE');
       }
-      // Mark the node COMPLETE so its status pill reflects the refresh.
-      updateAgentNode(flowIdStr, id, 'COMPLETE');
     } catch (e) {
       console.error('Forecaster refresh failed:', e);
     } finally {
@@ -501,16 +420,21 @@ export function ForecasterNode({
     }
   };
 
+  // Header chip text under the chart's CHRONOS-2 spot: "Chronos-2" alone
+  // when only one backbone is selected, "Chronos-2 + Toto-2.0" when both
+  // — matches the dashed-vs-solid line styling in the chart legend.
+  const chipLabel = backbones.map((b) => BACKBONE_INFO[b].label).join(' + ');
+
   return (
     <NodeShell
       id={id}
       selected={selected}
       isConnectable={isConnectable}
       icon={<LineChart className="h-5 w-5" />}
-      iconColor={getStatusColor(status)}
+      iconColor={getStatusColor(combinedStatus)}
       name={data.name || 'Time Series Forecaster'}
       description={data.description}
-      status={status}
+      status={combinedStatus}
     >
       <CardContent className="p-0">
         <div className="border-t border-border p-3">
@@ -518,36 +442,65 @@ export function ForecasterNode({
             <div className="text-subtitle text-primary flex items-center gap-1">Status</div>
             <div className={cn(
               'text-foreground text-xs rounded p-2 border border-status',
-              isInProgress ? 'gradient-animation' : getStatusColor(status),
+              isInProgress ? 'gradient-animation' : getStatusColor(combinedStatus),
             )}>
-              <span className="capitalize">{status.toLowerCase().replace(/_/g, ' ')}</span>
+              <span className="capitalize">{combinedStatus.toLowerCase().replace(/_/g, ' ')}</span>
             </div>
-            {nodeData.message && (
+            {latestStatusBeacon.message && (
               <div className="text-foreground text-subtitle">
-                {nodeData.message !== 'Done' && nodeData.message}
-                {nodeData.ticker && <span className="ml-1">({nodeData.ticker})</span>}
+                {latestStatusBeacon.message !== 'Done' && latestStatusBeacon.message}
+                {latestStatusBeacon.ticker && <span className="ml-1">({latestStatusBeacon.ticker})</span>}
               </div>
             )}
 
-            {/* Backbone settings — bar frequency picker + context/prediction
-                lengths. Length units adapt to the frequency: 256 + 10 at
-                'Hourly' = 256 hours of context, 10-hour forecast. The
-                Daily path runs through the cached provider chain; intraday
-                hits yfinance directly with hard period caps per interval
-                (1m≤7d, 5m≤60d, 1h≤730d). Same UI for Chronos and Toto —
-                both honour the same context/prediction/frequency contract. */}
+            {/* Backbones multi-select — checkbox per available foundation
+                model. At least one must stay selected (the toggle returns
+                without effect if the user tries to deselect the last
+                one). When both are selected the chart renders both fans
+                on shared axes and the PM sees both stances under their
+                separate analyst names in the wiki. */}
             <TooltipProvider>
-              <div className="text-subtitle text-primary flex items-center gap-1 mt-1">
-                <span>{modelLabel} Settings</span>
-                {otherForecasterId && (
-                  <span
-                    className="text-[9px] uppercase tracking-wide text-muted-foreground font-normal"
-                    title={`Bar frequency, context, and prediction are shared with the ${overlayLabel} node so both backbones run on matching axes (required for the overlay).`}
-                  >
-                    · synced with {overlayLabel}
-                  </span>
-                )}
+              <div className="text-subtitle text-primary flex items-center gap-1 mt-1">Backbones</div>
+              <div className="flex flex-col gap-1.5">
+                {BACKBONE_ORDER.map((b) => {
+                  const checked = backbones.includes(b);
+                  const isLastChecked = checked && backbones.length === 1;
+                  return (
+                    <Tooltip key={b}>
+                      <TooltipTrigger asChild>
+                        <label className={cn(
+                          'flex items-center gap-2 text-xs rounded border border-border bg-node/40 px-2 py-1.5 cursor-pointer hover:border-primary/40 transition-colors',
+                          isLastChecked && 'cursor-not-allowed opacity-90',
+                        )}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={isLastChecked}
+                            onChange={(e) => toggleBackbone(b, e.target.checked)}
+                            className="cursor-pointer disabled:cursor-not-allowed"
+                          />
+                          <span className="text-foreground font-medium">{BACKBONE_INFO[b].label}</span>
+                          {isLastChecked && (
+                            <span className="ml-auto text-[9px] uppercase tracking-wide text-muted-foreground">required</span>
+                          )}
+                        </label>
+                      </TooltipTrigger>
+                      <TooltipContent side="right" className="max-w-[280px] text-xs">
+                        {BACKBONE_INFO[b].blurb}
+                      </TooltipContent>
+                    </Tooltip>
+                  );
+                })}
               </div>
+            </TooltipProvider>
+
+            {/* Settings — shared across whichever backbones are selected.
+                Length units adapt to the chosen frequency: 256 + 10 at
+                'Hourly' = 256 hours of context, 10-hour forecast. The
+                Daily path runs through the cached provider chain;
+                intraday hits yfinance directly (1m≤7d, 5m≤60d, 1h≤730d). */}
+            <TooltipProvider>
+              <div className="text-subtitle text-primary flex items-center gap-1 mt-1">Settings</div>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <div className="flex flex-col gap-0.5">
@@ -589,7 +542,7 @@ export function ForecasterNode({
                     </div>
                   </TooltipTrigger>
                   <TooltipContent side="top" className="max-w-[260px] text-xs">
-                    Past bars {modelLabel} reads as context. Range {CTX_MIN}–{CTX_MAX}.
+                    Past bars each backbone reads as context. Range {CTX_MIN}–{CTX_MAX}.
                     More context generally improves the forecast but costs a slower
                     forward pass. Intraday frequencies clip to available history
                     (1m≤7d, 5m≤60d, 1h≤730d).
@@ -615,8 +568,8 @@ export function ForecasterNode({
                   </TooltipTrigger>
                   <TooltipContent side="top" className="max-w-[260px] text-xs">
                     Bars to forecast forward. Range {PRED_MIN}–{PRED_MAX}.
-                    Longer horizons produce wider fans (lower confidence) — Chronos
-                    is most accurate at the short end.
+                    Longer horizons produce wider fans (lower confidence) — both
+                    backbones are most accurate at the short end.
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -625,8 +578,9 @@ export function ForecasterNode({
             <div className="text-subtitle text-primary flex items-center justify-between gap-1 mt-1">
               <span>Forecast</span>
               <div className="flex items-center gap-2">
-                {/* Refresh-this-node-only. Disabled while in-flight or
-                    before the first run (tickers come from prior data). */}
+                {/* One Refresh — re-runs every selected backbone on the
+                    current settings. Disabled until the first flow run has
+                    set the ticker list. */}
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -648,28 +602,28 @@ export function ForecasterNode({
                         )}
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent side="top" className="max-w-[240px] text-xs">
+                    <TooltipContent side="top" className="max-w-[260px] text-xs">
                       {tickers.length === 0
                         ? 'Run the flow once to set the tickers, then refresh updates only this node.'
-                        : `Refresh forecast for ${tickers.length} ticker${tickers.length === 1 ? '' : 's'} — runs ${modelLabel} only, no other agents.`}
+                        : `Refresh forecast for ${tickers.length} ticker${tickers.length === 1 ? '' : 's'} — re-runs ${chipLabel} only, no other agents.`}
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
                 <span
                   className="text-[10px] uppercase tracking-wide text-muted-foreground"
-                  title={modelBlurb}
+                  title={backbones.map((b) => BACKBONE_INFO[b].blurb).join('\n\n')}
                 >
-                  {modelLabel}
+                  {chipLabel}
                 </span>
               </div>
             </div>
             {activeForecast ? (
               <>
-                {/* Inline preview — click-through to detail dialog.
-                    When another forecaster is on the canvas, its fan is
-                    overlaid (dashed q50, lighter band) and a small chip
-                    in the top-left identifies it. Mismatched bar frequency
-                    surfaces a separate amber chip. */}
+                {/* Inline preview — click-through to detail dialog. When
+                    both backbones are selected the second fan paints as a
+                    dashed-q50 overlay, identified by a small chip top-left.
+                    Mismatched bar frequency surfaces a separate amber
+                    chip (means a Refresh is needed to re-align axes). */}
                 <button
                   type="button"
                   onClick={() => setIsDetailOpen(true)}
@@ -688,7 +642,7 @@ export function ForecasterNode({
                   {overlayFreqMismatch && !activeOverlay && (
                     <span
                       className="absolute top-1 left-1 px-1 py-0.5 rounded bg-amber-500/15 text-[8px] uppercase tracking-wide text-amber-500 border border-amber-500/40 pointer-events-none"
-                      title={`${overlayLabel} is on a different bar frequency — overlay suppressed`}
+                      title={`${overlayLabel} is on a different bar frequency — overlay suppressed until you Refresh both backbones together.`}
                     >
                       ⚠ {overlayLabel} freq differs
                     </span>
@@ -717,7 +671,7 @@ export function ForecasterNode({
               </>
             ) : (
               <div className="text-foreground text-xs rounded p-2 border border-border border-dashed text-muted-foreground text-center">
-                {status === 'IDLE'
+                {combinedStatus === 'IDLE'
                   ? 'Run the flow to generate a forecast.'
                   : isInProgress
                     ? 'Forecasting…'
@@ -754,8 +708,8 @@ export function ForecasterNode({
             isRefreshing,
             canRefresh: tickers.length > 0,
             tickerCount: tickers.length,
-            modelLabel,
-            syncedWithLabel: otherForecasterId ? overlayLabel : null,
+            modelLabel: primaryLabel,
+            syncedWithLabel: overlayBackbone ? overlayLabel : null,
           }}
         />
       </CardContent>
@@ -968,7 +922,11 @@ function ForecastDetailDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-primary text-xl">
             <LineChart className="h-5 w-5" />
-            <span>{controls.modelLabel} Forecast{activeTicker ? ` · ${activeTicker}` : ''}</span>
+            <span>
+              {controls.modelLabel}
+              {controls.syncedWithLabel ? ` + ${controls.syncedWithLabel}` : ''} Forecast
+              {activeTicker ? ` · ${activeTicker}` : ''}
+            </span>
           </DialogTitle>
         </DialogHeader>
         <DialogChronosSettings controls={controls} stale={stale} />
@@ -1110,13 +1068,13 @@ function DialogChronosSettings({ controls, stale }: { controls: ChronosControls;
       <div className="rounded border border-border bg-node/40 p-3">
         <div className="flex items-center justify-between mb-2">
           <div className="text-xs uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
-            <span>{controls.modelLabel} Settings</span>
+            <span>Settings</span>
             {controls.syncedWithLabel && (
               <span
                 className="text-[10px] normal-case tracking-normal text-muted-foreground/80"
-                title={`Bar frequency, context, and prediction are shared with the ${controls.syncedWithLabel} node so both backbones run on matching axes (required for the overlay).`}
+                title={`Shared across ${controls.modelLabel} and ${controls.syncedWithLabel} so both backbones run on matching axes — required for the overlay to render.`}
               >
-                · synced with {controls.syncedWithLabel}
+                · {controls.modelLabel} + {controls.syncedWithLabel}
               </span>
             )}
           </div>

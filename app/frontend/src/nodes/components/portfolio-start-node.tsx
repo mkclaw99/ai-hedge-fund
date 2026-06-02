@@ -3,6 +3,7 @@ import { ChevronDown, PieChart, Play, Plus, Square, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { resolveEffectiveStrategy } from '@/lib/effective-strategy';
+import { expandForecasterGraph } from '@/lib/forecaster-expand';
 
 import { Button } from '@/components/ui/button';
 import { CardContent } from '@/components/ui/card';
@@ -225,14 +226,30 @@ export function PortfolioStartNode({
     const placePaperOrders = !!tradingState?.autoTrade;
     const startingBudget = Number(tradingState?.startingBudget ?? 0) || undefined;
 
-    // Time Series Forecaster node — if wired in, surface its per-node
-    // Chronos-2 length config so the backend agent picks it up.
-    // Reachable-only so a disconnected node doesn't quietly override.
+    // Time Series Forecaster node — if wired in, surface its shared
+    // length config so the backend forecaster_agent picks it up. The
+    // settings are flat (one set per canvas node) and apply to every
+    // selected backbone in lockstep, so reading any one reachable
+    // forecaster node is enough. Reachable-only so a disconnected node
+    // doesn't quietly override.
     const forecasterNode = allNodes.find((n) => reachableNodes.has(n.id) && n.type === 'forecaster-node');
     const forecasterState = (forecasterNode ? getNodeInternalState(forecasterNode.id) : null) as any;
     const forecasterContextLen = forecasterState?.forecasterContextLen != null ? Number(forecasterState.forecasterContextLen) : undefined;
     const forecasterPredictionLen = forecasterState?.forecasterPredictionLen != null ? Number(forecasterState.forecasterPredictionLen) : undefined;
     const forecasterBarFrequency = forecasterState?.forecasterBarFrequency || undefined;
+
+    // Expand any forecaster canvas nodes into one graph_node per selected
+    // backbone (and fan out edges touching them) so the backend's
+    // prefix-keyed dispatch picks the right model per agent_id. Legacy
+    // single-backbone canvas nodes pass through unchanged.
+    const expanded = expandForecasterGraph(agentNodes, validEdges);
+    const expandedGraphNodes = expanded.nodes.map((node) => ({
+      id: node.id,
+      type: node.type,
+      data: node.data,
+      position: node.position,
+    }));
+    const expandedGraphEdges = expanded.edges;
 
     // Per-agent Gemini thinking budgets. Read each agent-node's
     // useNodeState('thinkingBudget') and forward as {agent_id: enum}.
@@ -257,13 +274,8 @@ export function PortfolioStartNode({
       runBacktest({
         tickers: tickerList,
         // Send the actual graph structure instead of just selected analysts
-        graph_nodes: agentNodes.map(node => ({
-          id: node.id,
-          type: node.type,
-          data: node.data,
-          position: node.position
-        })),
-        graph_edges: validEdges,
+        graph_nodes: expandedGraphNodes,
+        graph_edges: expandedGraphEdges,
         agent_models: agentModels,
         start_date: startDate,
         end_date: endDate,
@@ -286,13 +298,8 @@ export function PortfolioStartNode({
       runFlow({
         tickers: tickerList,
         // Send the actual graph structure instead of just selected agents
-        graph_nodes: agentNodes.map(node => ({
-          id: node.id,
-          type: node.type,
-          data: node.data,
-          position: node.position
-        })),
-        graph_edges: validEdges,
+        graph_nodes: expandedGraphNodes,
+        graph_edges: expandedGraphEdges,
         agent_models: agentModels,
         // No global model - each agent uses its own model or system default
         model_name: primaryModel.model_name,

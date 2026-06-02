@@ -183,15 +183,14 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
     return addStateChangeListener(() => bumpStateVersion((v) => v + 1));
   }, []);
 
-  // Reactive read of EVERY connected Forecaster node's settings. Both
-  // Chronos-2 (`forecaster_*` ids) and Toto-2.0 (`toto_forecaster_*` ids)
-  // share the `forecaster-node` type, so a flow can carry one or both.
-  // The badge below lists every one with its backbone + horizon;
-  // mismatch warning fires when ANY of them drifts from holding-period.
-  // handleReplay/handleBacktest pass the first forecaster's settings
-  // through the per-flow `forecaster_*` request fields — backward-compat
-  // with the single-forecaster request shape. Per-backbone overrides
-  // would require new request fields; out of scope for this PR.
+  // Reactive read of every reachable forecaster canvas node's settings.
+  // One canvas node can now run multiple backbones (Chronos-2 + Toto-2.0)
+  // on shared settings, so we emit one row per (canvas_node, selected
+  // backbone). The badge below lists every one with its backbone +
+  // horizon; the holding-period mismatch warning fires if any drifts.
+  // Legacy single-backbone canvas nodes (where backbones isn't in
+  // internal_state) fall back to the id-prefix default — keeps two-node
+  // flows from before the multi-select PR working unchanged.
   type LinkedForecaster = {
     id: string;
     backbone: 'chronos2' | 'toto2';
@@ -205,15 +204,21 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
     for (const f of getNodes()) {
       if (f.type !== 'forecaster-node') continue;
       const s = getNodeInternalState(f.id) as any;
-      const isToto = f.id.startsWith('toto_forecaster');
-      out.push({
-        id: f.id,
-        backbone: isToto ? 'toto2' : 'chronos2',
-        backboneLabel: isToto ? 'Toto-2.0' : 'Chronos-2',
-        ctx: typeof s?.forecasterContextLen === 'number' ? s.forecasterContextLen : undefined,
-        pred: typeof s?.forecasterPredictionLen === 'number' ? s.forecasterPredictionLen : undefined,
-        freq: s?.forecasterBarFrequency,
-      });
+      const ctx = typeof s?.forecasterContextLen === 'number' ? s.forecasterContextLen : undefined;
+      const pred = typeof s?.forecasterPredictionLen === 'number' ? s.forecasterPredictionLen : undefined;
+      const freq = s?.forecasterBarFrequency;
+      const saved = Array.isArray(s?.forecasterBackbones) ? s.forecasterBackbones : null;
+      const backbones: ('chronos2' | 'toto2')[] = saved && saved.length > 0
+        ? saved.filter((x: any) => x === 'chronos2' || x === 'toto2')
+        : (f.id.startsWith('toto_forecaster') ? ['toto2'] : ['chronos2']);
+      for (const b of backbones) {
+        out.push({
+          id: f.id,
+          backbone: b,
+          backboneLabel: b === 'toto2' ? 'Toto-2.0' : 'Chronos-2',
+          ctx, pred, freq,
+        });
+      }
     }
     return out;
   })();

@@ -107,8 +107,65 @@ export function FlowTabContent({ flow, className }: FlowTabContentProps) {
       const analystSignals: Record<string, Record<string, unknown>> = {};
       const decisions: Record<string, unknown> = {};
 
+      // Forecaster canvas nodes carry two backbones internally (Chronos-2
+      // and Toto-2.0). Rehydrate from BOTH wiki analyst names ("Forecaster"
+      // / "Toto Forecaster") and dispatch each backbone's rows to the
+      // synthesised per-backbone agent_id so the forecaster-node's
+      // per-backbone reader picks them up. We dispatch both backbones'
+      // rows regardless of the canvas's current backbones selection so
+      // toggling Toto on after a Chronos-only run still surfaces the
+      // existing wiki data instantly.
+      const FORECASTER_ROW_ALIASES: Record<'chronos2' | 'toto2', string[]> = {
+        chronos2: ['forecaster', 'time series forecaster'],
+        toto2: ['toto forecaster'],
+      };
+      const forecasterAgentIdFor = (canvasId: string, b: 'chronos2' | 'toto2'): string => {
+        const suffix = canvasId.replace(/^toto_forecaster_|^forecaster_/, '');
+        return b === 'toto2' ? `toto_forecaster_${suffix}` : `forecaster_${suffix}`;
+      };
+
       for (const node of flowToLoad.nodes ?? []) {
         const baseKey = extractBaseAgentKey(node.id);
+
+        // Forecaster path — special-cased before the generic analyst
+        // path because one canvas node maps to two wiki analyst names.
+        if (node.type === 'forecaster-node') {
+          let anyDispatched = false;
+          for (const b of ['chronos2', 'toto2'] as const) {
+            const aid = forecasterAgentIdFor(node.id, b);
+            const aliases = FORECASTER_ROW_ALIASES[b];
+            let dispatchedThisBackbone = 0;
+            for (const t of tickersMem) {
+              const row = (t.analysts ?? []).find((a) => aliases.includes((a.analyst ?? '').toLowerCase()));
+              if (!row?.reasoning) continue;
+              updateAgentNode(flowId, aid, {
+                timestamp: tsFor(row.date, t.ticker),
+                message: 'Done',
+                ticker: t.ticker,
+                analysis: row.reasoning,
+              });
+              dispatchedThisBackbone += 1;
+              // analyst_signals key for OutputNode mirror.
+              const agentKey = `${b === 'toto2' ? 'toto_forecaster' : 'forecaster'}_agent`;
+              analystSignals[agentKey] = analystSignals[agentKey] || {};
+              (analystSignals[agentKey] as Record<string, unknown>)[t.ticker] = {
+                signal: row.signal,
+                confidence: row.confidence,
+                reasoning: row.reasoning,
+              };
+            }
+            if (dispatchedThisBackbone > 0) {
+              updateAgentNode(flowId, aid, 'COMPLETE');
+              anyDispatched = true;
+            }
+          }
+          // Drive the canvas-node id status too so the NodeShell pill
+          // shows COMPLETE on first load (combinedStatus rolls up per-
+          // backbone, but the legacy code paths that read the canvas id
+          // directly still expect a status on it).
+          if (anyDispatched) updateAgentNode(flowId, node.id, 'COMPLETE');
+          continue;
+        }
 
         // Portfolio Manager path — pull pm_decisions per ticker.
         if (baseKey === 'portfolio_manager') {

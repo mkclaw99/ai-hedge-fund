@@ -178,27 +178,40 @@ ANALYST_CONFIG = {
         "order": 18,
     },
     "forecaster": {
-        "display_name": "Time Series Forecaster (Chronos-2)",
-        "description": "Chronos-2 Price Forecaster",
-        "investing_style": "Runs Amazon's Chronos-2 foundation model (120M params, encoder-only T5-style) on recent daily closes to produce a probabilistic 10-day price forecast, and maps the q10/q50/q90 fan to a directional signal whose confidence reflects how unanimously the quantiles agree.",
+        "display_name": "Time Series Forecaster",
+        "description": "Probabilistic Price Forecaster",
+        "investing_style": (
+            "Runs one or more time-series foundation models on recent closes to produce a probabilistic price forecast "
+            "and maps the q10/q50/q90 fan to a directional signal whose confidence reflects how unanimously the "
+            "quantiles agree. Two backbones are selectable from the node UI: Amazon Chronos-2 (120M-param encoder-only "
+            "T5-style; default) and Datadog Toto-2.0-313m (313M-param decoder-only patched transformer, Apache 2.0; "
+            "out-of-distribution for equities — useful as an INDEPENDENT second voice). When both backbones are "
+            "enabled the chart overlays both fans, the PM sees both stances under their respective analyst names "
+            "(\"Forecaster\" and \"Toto Forecaster\"), and both run from the single node on shared settings. The Toto "
+            "backbone requires the optional install via scripts/install_toto.sh; missing → \"unavailable\" with the "
+            "Chronos run unaffected."
+        ),
         "agent_func": forecaster_agent,
         "type": "analyst",
         "order": 19,
     },
+    # Toto kept registered so legacy `toto_forecaster_*` canvas nodes and the
+    # synthetic split-on-run agent_ids (one canvas node → two backend agent
+    # runs) both resolve to the right ``agent_func``. ``hide_from_palette``
+    # keeps it out of the sidebar — users see only the single "Time Series
+    # Forecaster" entry, then toggle Toto on inside the node.
     "toto_forecaster": {
         "display_name": "Time Series Forecaster (Toto-2.0)",
         "description": "Toto-2.0 Price Forecaster",
         "investing_style": (
-            "Runs Datadog's Toto-2.0-313m foundation model (313M-param decoder-only patched transformer, Apache 2.0) "
-            "on recent closes to produce a probabilistic forecast with the same q10/q25/q50/q75/q90 fan as Chronos-2. "
-            "Trained on ~2T points of observability metrics + synthetic data (no public forecasting datasets in "
-            "pretraining), so equity prices are out-of-distribution — useful as an INDEPENDENT second voice next to "
-            "Chronos rather than a replacement. Wire BOTH forecasters into the PM to compare. Requires the optional "
-            "install via scripts/install_toto.sh; falls back to 'unavailable' if missing."
+            "Datadog Toto-2.0-313m backbone. Reached via the Backbones multi-select on the Time Series Forecaster "
+            "node — this entry stays registered for back-compat with legacy two-node flows and for the per-backbone "
+            "agent_id dispatch but is hidden from the palette."
         ),
         "agent_func": forecaster_agent,  # same function — dispatches by agent_id
         "type": "analyst",
         "order": 22,  # after Simons (20)
+        "hide_from_palette": True,
     },
     "jim_simons": {
         "display_name": "Jim Simons",
@@ -227,7 +240,15 @@ def get_analyst_nodes():
 
 
 def get_agents_list():
-    """Get the list of agents for API responses."""
+    """Get the list of agents for API responses.
+
+    Entries flagged ``hide_from_palette`` are dropped — they're still
+    registered for backend dispatch (and any legacy canvas-node id that
+    references them keeps working) but they don't surface in the
+    sidebar palette. Used to fold the Toto backbone under the single
+    "Time Series Forecaster" entry while still allowing
+    ``toto_forecaster_*`` agent_ids to resolve to the right agent_func.
+    """
     return [
         {
             "key": key,
@@ -237,4 +258,5 @@ def get_agents_list():
             "order": config["order"]
         }
         for key, config in sorted(ANALYST_CONFIG.items(), key=lambda x: x[1]["order"])
+        if not config.get("hide_from_palette")
     ]
