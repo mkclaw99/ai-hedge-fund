@@ -16,6 +16,7 @@ from app.backend.services.run_executor import resolve_run
 from app.backend.services.research_scheduler import persist_research_run
 from app.backend.services.backtest_service import BacktestService
 from app.backend.services.api_key_service import ApiKeyService
+from app.backend.services.default_model import apply_default_model_fallback
 from src.utils.progress import progress
 from src.utils.analysts import get_agents_list
 
@@ -35,6 +36,13 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
         if not request_data.api_keys:
             api_key_service = ApiKeyService(db)
             request_data.api_keys = api_key_service.get_api_keys_dict()
+
+        # Substitute the user's pinned default model when the schema-default
+        # OpenAI route has no key — covers the freshly-dropped-PM race (auto-
+        # seed hadn't fired before Play was clicked) and the general "user
+        # only has GOOGLE_API_KEY but request defaults to OpenAI" case.
+        # No-op when an OpenAI key is configured or no default is pinned.
+        apply_default_model_fallback(request_data, db)
 
         # Portfolio is created inside the stream (after research-area discovery,
         # which may resolve the tickers from a theme).
@@ -240,6 +248,12 @@ async def backtest(request_data: BacktestRequest, request: Request, db: Session 
         if not request_data.api_keys:
             api_key_service = ApiKeyService(db)
             request_data.api_keys = api_key_service.get_api_keys_dict()
+
+        # Same default-model fallback as /run — covers the race where an
+        # agent's per-node model auto-seed hadn't resolved before Play was
+        # clicked, or the user only has GOOGLE_API_KEY but the schema
+        # default routes to OpenAI.
+        apply_default_model_fallback(request_data, db)
 
         # Convert model_provider to string if it's an enum
         model_provider = request_data.model_provider
