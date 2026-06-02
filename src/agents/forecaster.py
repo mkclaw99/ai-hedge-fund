@@ -17,16 +17,44 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta
-from threading import Lock
-
 import numpy as np
 import pandas as pd
 from langchain_core.messages import HumanMessage
 
+from src.agents._forecaster_backbones import (
+    BackboneResult,
+    run as run_backbone,
+)
 from src.graph.state import AgentState, show_agent_reasoning
 from src.tools.api import get_prices, prices_to_df
 from src.utils.api_key import get_api_key_from_state
 from src.utils.progress import progress
+
+
+# Backbone resolution from the agent_id. The frontend node-mappings.ts
+# spawns two distinct registry keys (`forecaster` vs `toto_forecaster`)
+# but both produce the same `forecaster-node` UI component. The agent_id
+# carries the disambiguation through to the backend so a single agent
+# function dispatches to either Chronos-2 or Toto-2.0 without forking
+# every code path (registry, route, frontend) by backbone.
+def _resolve_backbone(agent_id: str) -> str:
+    """Map an agent_id (e.g. 'forecaster_abc123' or 'toto_forecaster_abc123')
+    to a backbone name understood by ``_forecaster_backbones.run``.
+    Defaults to chronos2 — the historical backbone — for unrecognised ids
+    so existing wiki rows + saved flows keep behaving the same."""
+    if agent_id.startswith("toto_forecaster"):
+        return "toto2"
+    return "chronos2"
+
+
+def _backbone_display_name(backbone: str) -> str:
+    """Human-readable label for trace / report headers. Mirrors the
+    BackboneResult.model_name values so a stale failure path (where we
+    never got a result) still produces consistent UI text."""
+    return {
+        "chronos2": "Amazon Chronos-2",
+        "toto2": "Datadog Toto-2.0",
+    }.get(backbone, backbone)
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +64,12 @@ logger = logging.getLogger(__name__)
 _MODEL_ID = "amazon/chronos-2"
 _CONTEXT_LEN = 256              # last N daily closes fed to the model
 _PRED_LEN = 10                  # trading-day horizon (~2 weeks)
-# Quantiles requested from Chronos at the forecast step. Five rather than
-# three gives us the nested-band fan chart idiom (inner 50% interval
-# q25-q75, outer 80% interval q10-q90) used in central-bank reports. No
-# extra compute — it's the same forward pass, just more quantile reads.
-# Signal mapping deliberately still only uses q10/q50/q90 (see
-# _build_signal) so PM track-record stays consistent across versions.
-_QUANTILES = [0.1, 0.25, 0.5, 0.75, 0.9]
+# Quantile contract documented in _forecaster_backbones.BackboneResult:
+# every backbone returns five levels — q10/q25/q50/q75/q90 — so the
+# nested-band fan chart idiom (inner 50% interval, outer 80% interval) is
+# uniform across backbones. Signal mapping below still uses only
+# q10/q50/q90 at the horizon end so the PM's track-record stays comparable
+# across both backbones and across versions.
 _NEUTRAL_PCT = 1.0              # |q50_pct| below this → neutral
 
 # Bar-frequency knob. Daily goes through the standard provider chain
@@ -57,9 +84,6 @@ _YFI_INTERVAL = {"hour": "1h", "5min": "5m", "1min": "1m"}
 _YFI_PERIOD = {"1m": "7d", "5m": "60d", "1h": "730d"}
 # Friendly singular-unit label used in the report/UI.
 _FREQ_UNIT = {"day": "trading day", "hour": "hour", "5min": "5-min bar", "1min": "minute"}
-
-_pipeline = None
-_pipeline_lock = Lock()
 
 # History context shown alongside the forecast in the node's inline chart.
 # Kept short on purpose — the chart panel is ~180 px wide and 30 trading
@@ -78,35 +102,6 @@ _CHART_HISTORY_HARD_MAX = 8192
 # block as a labelled code fence if a human opens the raw analysis.
 _CHART_FENCE_OPEN = "```forecast-data"
 _CHART_FENCE_CLOSE = "```"
-
-
-def _load_pipeline():
-    """Lazy, process-wide singleton load of Chronos-2.
-
-    All imports are local so a missing chronos / torch install doesn't
-    break the rest of the app on import. Returns None on any failure;
-    callers must treat that as "skip the analyst, keep the pipeline".
-    """
-    global _pipeline
-    if _pipeline is not None:
-        return _pipeline
-    with _pipeline_lock:
-        if _pipeline is not None:
-            return _pipeline
-        try:
-            from chronos import Chronos2Pipeline  # lazy import
-        except Exception as e:
-            logger.warning("chronos-forecasting not importable: %s", e)
-            return None
-        try:
-            # device_map="auto" picks CUDA → MPS → CPU in that order; on
-            # Apple Silicon you get MPS for free, on CPU-only it still works
-            # (slow but usable for ~10-step forecasts on a handful of tickers).
-            _pipeline = Chronos2Pipeline.from_pretrained(_MODEL_ID, device_map="auto")
-        except Exception as e:
-            logger.warning("Chronos-2 load failed: %s", e)
-            return None
-    return _pipeline
 
 
 def _resolve_lengths(state: AgentState) -> tuple[int, int]:
@@ -222,13 +217,25 @@ def _fetch_bars(ticker: str, end_date: str, frequency: str, count: int, api_key:
 
 
 def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
-    """Run Chronos-2 on each ticker and emit a directional signal."""
+    """Run the configured forecaster backbone on each ticker and emit a
+    directional signal.
+
+    Backbone is resolved from the agent_id:
+      * ``forecaster_*``       → Chronos-2 (the original v1 backbone)
+      * ``toto_forecaster_*``  → Toto-2.0  (the new optional backbone)
+
+    Both produce the same ``BackboneResult`` shape, so the rest of this
+    function — signal mapping, confidence trajectory, chart fence,
+    reasoning markdown — is backbone-agnostic.
+    """
     data = state["data"]
     tickers = data["tickers"]
     end_date = data["end_date"]
     api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
     context_len, prediction_len = _resolve_lengths(state)
     frequency = _resolve_frequency(state)
+    backbone = _resolve_backbone(agent_id)
+    model_display = _backbone_display_name(backbone)
 
     # Collect price history per ticker first. Fast, and lets us bail out
     # cleanly if the model is unavailable without paying the load cost.
@@ -240,8 +247,8 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
             progress.update_status(agent_id, ticker, "Failed: no bars available")
             continue
         if closes.size < 30:
-            # Chronos can technically handle short context, but a forecast
-            # off ~30 bars is noise — applies at any frequency.
+            # Both backbones can technically handle short context, but a
+            # forecast off ~30 bars is noise at any frequency.
             progress.update_status(agent_id, ticker, "Failed: insufficient history")
             continue
         series_by_ticker[ticker] = closes
@@ -251,70 +258,32 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
         progress.update_status(agent_id, None, "Done")
         return {"messages": state["messages"], "data": data}
 
-    # Load the model once per process. First call downloads ~480 MB and
-    # warms the cache; subsequent calls are ~free.
-    for t in series_by_ticker:
-        progress.update_status(agent_id, t, "Loading Chronos-2")
-    pipeline = _load_pipeline()
-    if pipeline is None:
-        for t in series_by_ticker:
-            progress.update_status(agent_id, t, "Skipped: Chronos-2 unavailable")
-        state["data"]["analyst_signals"][agent_id] = {}
-        progress.update_status(agent_id, None, "Done")
-        return {"messages": state["messages"], "data": data}
-
-    # Batch every ticker into one predict_quantiles call. We use the array-
-    # based API (rather than predict_df) so we don't fight Chronos's date-
-    # frequency inference — daily equity series skip weekends/holidays,
-    # which trips the validator. The values are what we care about anyway.
-    for t in series_by_ticker:
-        progress.update_status(agent_id, t, "Running forecast")
-    tickers_ordered = list(series_by_ticker.keys())
-    inputs = [series_by_ticker[t] for t in tickers_ordered]
-    try:
-        quantile_tensors, _means = pipeline.predict_quantiles(
-            inputs,
-            prediction_length=prediction_len,
-            quantile_levels=_QUANTILES,
-        )
-    except Exception as e:
-        logger.warning("Chronos-2 forecast failed: %s", e)
-        for t in series_by_ticker:
-            progress.update_status(agent_id, t, "Failed: forecast error")
-        state["data"]["analyst_signals"][agent_id] = {}
-        progress.update_status(agent_id, None, "Done")
-        return {"messages": state["messages"], "data": data}
-
+    # Per-ticker dispatch through the backbone module. Each backbone owns
+    # its own lazy-init + caching; the agent only sees ``BackboneResult``s
+    # (or None for "skip this ticker"). One pass per ticker rather than
+    # batched: Toto's `forecast(...)` takes a single (batch=1, var=1) input
+    # at a time, and Chronos's batch advantage is marginal for the small
+    # ticker counts hedge-fund flows use (~5).
     signals: dict[str, dict] = {}
-    for ticker, qt in zip(tickers_ordered, quantile_tensors):
-        last_close = float(series_by_ticker[ticker][-1])
-        # qt shape: (1, prediction_length, num_quantiles). The leading dim
-        # is the (per-series) batch axis from Chronos's internal padding.
-        # Quantile order matches _QUANTILES (= [0.1, 0.25, 0.5, 0.75, 0.9]).
-        try:
-            arr = qt.detach().cpu().numpy() if hasattr(qt, "detach") else np.asarray(qt)
-            arr = np.squeeze(arr, axis=0) if arr.ndim == 3 else arr
-            q10_traj = arr[:, 0].astype(float).tolist()
-            q25_traj = arr[:, 1].astype(float).tolist()
-            q50_traj = arr[:, 2].astype(float).tolist()
-            q75_traj = arr[:, 3].astype(float).tolist()
-            q90_traj = arr[:, 4].astype(float).tolist()
-        except Exception as e:
-            logger.warning("Chronos-2 unparseable output for %s: %s", ticker, e)
+    for ticker, closes in series_by_ticker.items():
+        progress.update_status(agent_id, ticker, f"Running {model_display}")
+        result: BackboneResult | None = run_backbone(backbone, closes, prediction_len=prediction_len)
+        if result is None:
+            progress.update_status(agent_id, ticker, f"Skipped: {model_display} unavailable")
             continue
+        q10_traj, q25_traj, q50_traj, q75_traj, q90_traj = (
+            result.q10, result.q25, result.q50, result.q75, result.q90,
+        )
+        confidence_traj = result.confidence
+        last_close = float(closes[-1])
         # Signal mapping uses the final step's outer quantiles only — q25/q75
         # widen the inner band on the chart but don't change the directional
         # signal the PM sees, so track-record stays consistent across versions.
-        signals[ticker] = _build_signal(last_close, q10_traj[-1], q50_traj[-1], q90_traj[-1], horizon_days=prediction_len, frequency=frequency)
-        # Per-step confidence — precision of the predictive distribution at
-        # each step, derived from the 80% prediction interval's width
-        # as a fraction of the last close. Narrow band = confident,
-        # wide band = uncertain. Decays monotonically as the horizon
-        # extends, which is the property that makes the curve worth
-        # drawing. Distinct from the agent's *signal* confidence at the
-        # end of horizon (magnitude × agreement, see _build_signal),
-        # which measures directionality, not precision.
-        confidence_traj = _per_step_confidence(last_close, q10_traj, q90_traj)
+        signals[ticker] = _build_signal(
+            last_close, q10_traj[-1], q50_traj[-1], q90_traj[-1],
+            horizon_days=prediction_len, frequency=frequency,
+            model_name=result.model_name,
+        )
         # Per-ticker chart payload, embedded into the analysis Markdown so
         # the existing SSE 'analysis' channel carries it through without a
         # schema change. ForecasterNode parses the fence; other components
@@ -326,11 +295,11 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
         # truncating to a small slice. _CHART_HISTORY_MIN keeps a sane
         # floor for unconfigured runs.
         chart_history_n = min(
-            len(series_by_ticker[ticker]),
+            len(closes),
             max(_CHART_HISTORY_MIN, context_len),
             _CHART_HISTORY_HARD_MAX,
         )
-        history = [float(x) for x in series_by_ticker[ticker][-chart_history_n:].tolist()]
+        history = [float(x) for x in closes[-chart_history_n:].tolist()]
         chart = json.dumps({
             "history": [round(x, 4) for x in history],
             "q10": [round(x, 4) for x in q10_traj],
@@ -344,6 +313,11 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
             # label the time axis correctly (10 'bars' means 10 days at
             # 'day', 10 hours at 'hour', 10 minutes at '1min', etc.).
             "frequency": frequency,
+            # Which backbone produced these numbers. Lets the frontend show
+            # a "Chronos-2" / "Toto-2.0" badge per ticker — useful when two
+            # forecaster nodes are wired into the same flow.
+            "backbone": backbone,
+            "model_name": result.model_name,
         })
         # Hand-rolled report — no LLM call. The forecaster's whole point is
         # Chronos-2; routing the structured reasoning dict through an LLM
@@ -373,7 +347,7 @@ def forecaster_agent(state: AgentState, agent_id: str = "forecaster_agent"):
         progress.update_status(agent_id, ticker, "Done", analysis=analysis)
 
     if state["metadata"].get("show_reasoning"):
-        show_agent_reasoning(signals, "Time Series Forecaster")
+        show_agent_reasoning(signals, f"Time Series Forecaster ({model_display})")
     state["data"]["analyst_signals"][agent_id] = signals
     message = HumanMessage(content=json.dumps(signals), name=agent_id)
     progress.update_status(agent_id, None, "Done")
@@ -388,6 +362,7 @@ def _build_signal(
     *,
     horizon_days: int = _PRED_LEN,
     frequency: str = "day",
+    model_name: str = _MODEL_ID,
 ) -> dict:
     """Map a forecast fan to a ``{signal, confidence, reasoning}`` dict.
 
@@ -398,6 +373,9 @@ def _build_signal(
       • Median directional by ≥ _NEUTRAL_PCT % with the fan straddling
         current price → directional but weaker.
       • Otherwise neutral.
+
+    ``model_name`` flows into the reasoning dict so the PM and the wiki
+    both reflect which backbone produced this fan.
 
     Confidence (0-100) blends magnitude and quantile agreement:
       • magnitude — |q50 pct change| / 10, capped at 1 (a 10% move = full).
@@ -443,7 +421,7 @@ def _build_signal(
         "signal": signal,
         "confidence": max(0, min(100, int(confidence))),
         "reasoning": {
-            "model": _MODEL_ID,
+            "model": model_name,
             "horizon_days": horizon_days,
             "frequency": frequency,
             "last_close": round(last, 4),
@@ -462,41 +440,16 @@ def _build_signal(
     }
 
 
-def _per_step_confidence(last: float, q10_traj: list, q90_traj: list) -> list[int]:
-    """Confidence at each forecast step, derived from the fan width.
-
-    Defined as the 80% prediction interval's width as a fraction of the
-    last close, then mapped through a smooth decay so common values land
-    in 0-100:
-
-      - 2%  width → 83 (very tight; rare past a few days)
-      - 5%  width → 67 (typical day-1 to day-5 for large-caps)
-      - 10% width → 50 (typical end-of-horizon)
-      - 20% width → 33 (volatile names)
-      - 30% width → 25 (low-quality forecast territory)
-
-    The curve decays monotonically as the horizon extends — that's the
-    property that makes it worth visualising. Distinct from the agent's
-    *signal* confidence (magnitude × agreement at horizon end), which
-    measures directionality, not precision.
-    """
-    out: list[int] = []
-    base = max(last, 1e-9)
-    for q10, q90 in zip(q10_traj, q90_traj):
-        width_pct = max(0.0, (q90 - q10) / base * 100.0)
-        conf = 100.0 / (1.0 + width_pct / 10.0)
-        out.append(int(round(max(0.0, min(100.0, conf)))))
-    return out
-
-
 def _render_report(sig: dict) -> str:
     """Render a structured forecaster signal as a Markdown summary.
 
     Hand-rolled (no LLM) on purpose — the reasoning dict already carries
-    everything a reader needs in plain numbers, and the user's hedge fund
-    only has a Gemini key configured; routing this through an LLM picker
-    would imply the *forecast* depends on the LLM, which it doesn't. The
-    forecast is Chronos-2; this is just its readout.
+    everything a reader needs in plain numbers, and routing this through
+    an LLM picker would imply the *forecast* depends on the LLM, which it
+    doesn't. The forecast is whichever backbone fired; this is just its
+    readout. The model name in the header comes from the backbone's own
+    ``model_name`` so a Toto-2.0 fan reads "Datadog Toto-2.0" not
+    "Amazon Chronos-2".
     """
     r = sig.get("reasoning", {}) or {}
     fc = r.get("forecast_end", {}) or {}
@@ -508,6 +461,17 @@ def _render_report(sig: dict) -> str:
     unit_plural = unit + ("" if unit.endswith("s") else "s")
     signal = str(sig.get("signal", "neutral")).upper()
     confidence = int(sig.get("confidence", 0))
+    model_name = r.get("model") or "Amazon Chronos-2"
+    # One-line backbone description so the report is self-describing about
+    # which model produced these numbers. Falls back to the raw name when
+    # the backbone is unknown — keeps the report rendering robust to
+    # future additions.
+    model_blurb = {
+        "Amazon Chronos-2":
+            "120M-param probabilistic time-series foundation model, run locally on cached weights.",
+        "Datadog Toto-2.0":
+            "313M-param decoder-only TS foundation model (Datadog observability pretraining; Apache 2.0).",
+    }.get(model_name, "")
 
     def _pct(v) -> str:
         try:
@@ -525,8 +489,7 @@ def _render_report(sig: dict) -> str:
     return (
         f"**Signal:** {signal} · **Confidence:** {confidence}% · "
         f"**Horizon:** {horizon} {unit_plural}\n\n"
-        f"**Model:** Amazon Chronos-2 — 120M-param probabilistic time-series "
-        f"foundation model, run locally on the cached weights. "
+        f"**Model:** {model_name}{' — ' + model_blurb if model_blurb else ''} "
         f"**Bar frequency:** {freq}.\n\n"
         f"**At horizon end** vs last close ({_px(last)}):\n"
         f"- Lower bound (q10): {_pct(pct.get('q10'))} ({_px(fc.get('q10'))})\n"

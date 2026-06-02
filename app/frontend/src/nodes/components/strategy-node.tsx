@@ -183,20 +183,46 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
     return addStateChangeListener(() => bumpStateVersion((v) => v + 1));
   }, []);
 
-  // Reactive read of the connected Forecaster node's settings. None on the
-  // canvas → null. The badge below renders "No Forecaster wired" in that
-  // case; handleReplay/handleBacktest fall back to backend defaults.
-  const linkedForecaster: { ctx: number | undefined; pred: number | undefined; freq: 'day' | 'hour' | '5min' | '1min' | undefined } | null = (() => {
-    const f = getNodes().find((n) => n.type === 'forecaster-node');
-    if (!f) return null;
-    const s = getNodeInternalState(f.id) as any;
-    return {
-      ctx: typeof s?.forecasterContextLen === 'number' ? s.forecasterContextLen : undefined,
-      pred: typeof s?.forecasterPredictionLen === 'number' ? s.forecasterPredictionLen : undefined,
-      freq: s?.forecasterBarFrequency,
-    };
+  // Reactive read of EVERY connected Forecaster node's settings. Both
+  // Chronos-2 (`forecaster_*` ids) and Toto-2.0 (`toto_forecaster_*` ids)
+  // share the `forecaster-node` type, so a flow can carry one or both.
+  // The badge below lists every one with its backbone + horizon;
+  // mismatch warning fires when ANY of them drifts from holding-period.
+  // handleReplay/handleBacktest pass the first forecaster's settings
+  // through the per-flow `forecaster_*` request fields — backward-compat
+  // with the single-forecaster request shape. Per-backbone overrides
+  // would require new request fields; out of scope for this PR.
+  type LinkedForecaster = {
+    id: string;
+    backbone: 'chronos2' | 'toto2';
+    backboneLabel: 'Chronos-2' | 'Toto-2.0';
+    ctx: number | undefined;
+    pred: number | undefined;
+    freq: 'day' | 'hour' | '5min' | '1min' | undefined;
+  };
+  const linkedForecasters: LinkedForecaster[] = (() => {
+    const out: LinkedForecaster[] = [];
+    for (const f of getNodes()) {
+      if (f.type !== 'forecaster-node') continue;
+      const s = getNodeInternalState(f.id) as any;
+      const isToto = f.id.startsWith('toto_forecaster');
+      out.push({
+        id: f.id,
+        backbone: isToto ? 'toto2' : 'chronos2',
+        backboneLabel: isToto ? 'Toto-2.0' : 'Chronos-2',
+        ctx: typeof s?.forecasterContextLen === 'number' ? s.forecasterContextLen : undefined,
+        pred: typeof s?.forecasterPredictionLen === 'number' ? s.forecasterPredictionLen : undefined,
+        freq: s?.forecasterBarFrequency,
+      });
+    }
+    return out;
   })();
-  const mismatch = linkedForecaster ? horizonMismatch(holdingPeriod, linkedForecaster.freq) : null;
+  // First forecaster — Replay/Backtest source for per-flow forecaster_*
+  // request fields. Kept as `linkedForecaster` so existing call sites
+  // (further down) work unchanged.
+  const linkedForecaster = linkedForecasters[0] ?? null;
+  // Per-forecaster mismatch fires inside the badge JSX below — no need
+  // for an aggregate at this scope.
 
   // Simons-driven detection. When a Jim Simons node has an edge into this
   // Strategy node, it owns the StrategyConfig — the manual fields below
@@ -863,45 +889,61 @@ export function StrategyNode({ data, selected, id, isConnectable }: NodeProps<St
                 </div>
               </div>
 
-              {/* Linked Forecaster — surfaces the connected Time Series
-                  Forecaster node's horizon/frequency right next to the
-                  holding period the PM will apply. Helps spot mismatches
-                  ("position-period strategy + 24h Chronos forecast"). When
-                  no Forecaster is on the canvas, says so explicitly so the
-                  user knows the PM won't see Chronos input. */}
+              {/* Linked Forecasters — surfaces every connected Time Series
+                  Forecaster node's backbone + horizon. Chronos-2 and
+                  Toto-2.0 both spawn the same `forecaster-node` type, so a
+                  flow can have one of each. Helps spot horizon/holding
+                  mismatches and double-feed signals to the PM. */}
               <div className="flex flex-col gap-1">
                 <Tooltip delayDuration={200}>
                   <TooltipTrigger asChild>
-                    <div className="text-subtitle text-primary">Linked Forecaster</div>
+                    <div className="text-subtitle text-primary">
+                      Linked Forecaster{linkedForecasters.length > 1 ? 's' : ''}
+                      {linkedForecasters.length > 1 && (
+                        <span className="ml-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                          ×{linkedForecasters.length}
+                        </span>
+                      )}
+                    </div>
                   </TooltipTrigger>
                   <TooltipContent side="right" className="max-w-xs">
-                    The Time Series Forecaster node on this canvas (if any). Its bar
-                    frequency × prediction length sets the horizon the PM reads in
-                    the `## Forecast Mandate` block. Hold-period mismatch shown below
-                    when relevant.
+                    Every Forecaster node on this canvas. Each backbone's bar frequency
+                    × prediction length sets the horizon the PM reads in its
+                    `## Forecast Mandate` block. With two backbones wired, the PM
+                    sees both fans; useful for cross-validation.
                   </TooltipContent>
                 </Tooltip>
-                {linkedForecaster ? (
-                  <div className="flex flex-col gap-1 rounded-md border border-border bg-node px-2 py-1.5 text-xs">
-                    <div>
-                      <span className="text-muted-foreground">Frequency:</span>{' '}
-                      <span className="font-medium">{FREQ_LABEL[linkedForecaster.freq ?? 'day'] ?? linkedForecaster.freq ?? '—'}</span>
-                      {' · '}
-                      <span className="text-muted-foreground">Horizon:</span>{' '}
-                      <span className="font-medium">
-                        {linkedForecaster.pred ?? '?'} bars ({horizonLabel(linkedForecaster.pred, linkedForecaster.freq)})
-                      </span>
-                    </div>
-                    <div className="text-muted-foreground">
-                      Context: {linkedForecaster.ctx ?? '?'} bars
-                    </div>
-                    {mismatch && (
-                      <div className="text-amber-500">⚠ {mismatch}</div>
-                    )}
+                {linkedForecasters.length === 0 ? (
+                  <div className="rounded-md border border-border bg-node px-2 py-1.5 text-xs text-muted-foreground">
+                    No Forecaster node wired — PM won't see any time-series forecast.
                   </div>
                 ) : (
-                  <div className="rounded-md border border-border bg-node px-2 py-1.5 text-xs text-muted-foreground">
-                    No Forecaster node wired — PM won't see Chronos forecasts.
+                  <div className="flex flex-col gap-1.5">
+                    {linkedForecasters.map((lf) => {
+                      const localMismatch = horizonMismatch(holdingPeriod, lf.freq);
+                      return (
+                        <div key={lf.id} className="flex flex-col gap-1 rounded-md border border-border bg-node px-2 py-1.5 text-xs">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium">{lf.backboneLabel}</span>
+                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                              ctx {lf.ctx ?? '?'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Frequency:</span>{' '}
+                            <span className="font-medium">{FREQ_LABEL[lf.freq ?? 'day'] ?? lf.freq ?? '—'}</span>
+                            {' · '}
+                            <span className="text-muted-foreground">Horizon:</span>{' '}
+                            <span className="font-medium">
+                              {lf.pred ?? '?'} bars ({horizonLabel(lf.pred, lf.freq)})
+                            </span>
+                          </div>
+                          {localMismatch && (
+                            <div className="text-amber-500">⚠ {localMismatch}</div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

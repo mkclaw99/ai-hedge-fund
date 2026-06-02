@@ -34,7 +34,16 @@ router = APIRouter(prefix="/forecaster")
 
 @router.post("/refresh")
 def refresh_forecaster(req: ForecasterRefreshRequest):
-    """Run the forecaster only, persist via wiki, return per-ticker signals."""
+    """Run the forecaster only, persist via wiki, return per-ticker signals.
+
+    The forecaster supports two backbones (Chronos-2 and Toto-2.0). The
+    dispatch is keyed off ``agent_id``: a Chronos node passes
+    ``forecaster_agent`` (or ``forecaster_xxx``), a Toto node passes
+    ``toto_forecaster_xxx``. The agent's ``_resolve_backbone`` reads the
+    prefix and runs the right model. Frontend's forecaster-api.ts sends
+    the node's actual id; absence of the field falls back to Chronos —
+    preserves pre-PR behaviour byte-for-byte.
+    """
     tickers = [str(t).strip().upper() for t in (req.tickers or []) if t and str(t).strip()]
     if not tickers:
         return {"signals": {}, "end_date": req.end_date or date.today().isoformat()}
@@ -44,6 +53,11 @@ def refresh_forecaster(req: ForecasterRefreshRequest):
     # start_date just satisfies any code path that peeks at it. The agent
     # itself recomputes the window from context_len.
     start_date = (date.today() - timedelta(days=800)).isoformat()
+
+    # Backbone selection happens entirely via agent_id. Frontend sends the
+    # node's actual id (e.g. `toto_forecaster_abc123`) so the prefix carries
+    # the choice through without any extra schema fields.
+    agent_id = getattr(req, "agent_id", None) or "forecaster_agent"
 
     state = {
         "messages": [],
@@ -65,12 +79,12 @@ def refresh_forecaster(req: ForecasterRefreshRequest):
     }
 
     try:
-        forecaster_agent(state, agent_id="forecaster_agent")
+        forecaster_agent(state, agent_id=agent_id)
     except Exception as exc:
         logger.exception("forecaster refresh failed")
         return {"signals": {}, "end_date": end_date, "error": str(exc)}
 
-    signals = state["data"].get("analyst_signals", {}).get("forecaster_agent", {})
+    signals = state["data"].get("analyst_signals", {}).get(agent_id, {})
 
     # Persist to wiki so a page reload still surfaces the new forecast
     # via the rehydration path (ForecasterNode parses the
@@ -78,7 +92,7 @@ def refresh_forecaster(req: ForecasterRefreshRequest):
     try:
         run_id = uuid.uuid4().hex[:8]
         ingest_run(
-            {"forecaster_agent": signals},
+            {agent_id: signals},
             end_date=end_date,
             run_id=run_id,
             root=flow_root(f"flow-{req.flow_id}") if req.flow_id is not None else None,
