@@ -20,7 +20,7 @@
 // that already rides the SSE 'analysis' channel. We parse it out of the
 // per-ticker messages stored in node-context — no SSE schema change.
 
-import { type NodeProps, useReactFlow } from '@xyflow/react';
+import { type NodeProps, useNodes, useReactFlow } from '@xyflow/react';
 import { LineChart, Loader2, Maximize2, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -283,15 +283,22 @@ export function ForecasterNode({
   // The runtime path catches the case where the user just clicked Refresh
   // on the OTHER forecaster — that node's messages update, this node's
   // overlay updates without needing a wiki round-trip.
+  // Use xyflow's `useNodes()` (not `getNodes()` from useReactFlow) so this
+  // memo re-fires when nodes are added/removed on the canvas. `getNodes`
+  // is a stable function reference — depending on it in useMemo means the
+  // memo is computed once at mount and never updates if the user drops
+  // the *other* forecaster later. `useNodes()` returns the live array, so
+  // any structural change drives a re-render and re-computes this.
+  const liveNodes = useNodes();
   const otherForecasterId = useMemo<string | null>(() => {
-    for (const n of getNodes()) {
+    for (const n of liveNodes) {
       if (n.type !== 'forecaster-node') continue;
       if (n.id === id) continue;
       if (backboneFromId(n.id) === backbone) continue;  // same backbone, not an overlay candidate
       return n.id;
     }
     return null;
-  }, [getNodes, id, backbone]);
+  }, [liveNodes, id, backbone]);
   const otherBackbone: Backbone = backbone === 'toto2' ? 'chronos2' : 'toto2';
   const otherForecasterRuntime = useMemo<Record<string, ForecastPayload>>(() => {
     if (!otherForecasterId) return {};
