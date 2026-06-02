@@ -20,7 +20,7 @@
 // that already rides the SSE 'analysis' channel. We parse it out of the
 // per-ticker messages stored in node-context — no SSE schema change.
 
-import { type NodeProps } from '@xyflow/react';
+import { type NodeProps, useReactFlow } from '@xyflow/react';
 import { LineChart, Loader2, Maximize2, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -153,6 +153,10 @@ export function ForecasterNode({
 }: NodeProps<AgentNode>) {
   const { currentFlowId } = useFlowContext();
   const { getAgentNodeDataForFlow, updateAgentNode } = useNodeContext();
+  // Needed to find the OTHER forecaster node on the canvas for the
+  // overlay (Chronos sees Toto, Toto sees Chronos). React Flow's
+  // `getNodes()` is stable across renders for this purpose.
+  const { getNodes } = useReactFlow();
 
   const agentNodeData = getAgentNodeDataForFlow(currentFlowId?.toString() || null);
   const nodeData = agentNodeData[id] || {
@@ -206,28 +210,50 @@ export function ForecasterNode({
   // but the forecaster persists its full trajectory inside each Insight's
   // reasoning Markdown via the same `forecast-data` fence. We pull
   // /memory?flow_id=… on mount and parse the fence out per ticker so the
-  // chart reappears after F5.
+  // chart reappears after F5. We also rehydrate the OTHER backbone's
+  // forecasts here in the same pass (cheap — one query, both analyst
+  // names checked) so the overlay survives reload too.
   const [rehydrated, setRehydrated] = useState<Record<string, ForecastPayload>>({});
+  const [overlayRehydrated, setOverlayRehydrated] = useState<Record<string, ForecastPayload>>({});
   const flowIdNum = currentFlowId != null ? Number(currentFlowId) : null;
+  // Backbone → wiki analyst-name aliases. The slug after
+  // normalize_analyst_name strips `_agent` and the random suffix, then
+  // title-cases. `forecaster_xxxxxx` → "Forecaster"; `toto_forecaster_xxxxxx`
+  // → "Toto Forecaster". The legacy "Time Series Forecaster" alias is
+  // kept for pre-rename wiki rows.
+  const ownNames = backbone === 'toto2'
+    ? ['toto forecaster']
+    : ['forecaster', 'time series forecaster'];
+  const otherNames = backbone === 'toto2'
+    ? ['forecaster', 'time series forecaster']
+    : ['toto forecaster'];
+  // Stable join so React's dep array on the effect below doesn't see a
+  // new array literal every render and re-fire the fetch.
+  const ownNamesKey = ownNames.join('|');
+  const otherNamesKey = otherNames.join('|');
   useEffect(() => {
     if (flowIdNum == null) return;
     let cancelled = false;
     getFlowMemory(flowIdNum)
       .then((mem) => {
         if (cancelled) return;
-        const next: Record<string, ForecastPayload> = {};
+        const ownNext: Record<string, ForecastPayload> = {};
+        const otherNext: Record<string, ForecastPayload> = {};
+        const matches = (a: string | undefined, names: string[]) =>
+          !!a && names.includes(a.toLowerCase());
         for (const t of mem.tickers || []) {
-          // The wiki keys analyst names via normalize_analyst_name —
-          // 'forecaster_agent' → 'Forecaster' (not 'Time Series
-          // Forecaster' as the bench shows). Match case-insensitively
-          // so a future rename of either side doesn't silently break.
-          const row = (t.analysts || []).find(
-            (a) => a.analyst?.toLowerCase() === 'forecaster' || a.analyst?.toLowerCase() === 'time series forecaster',
-          );
-          const fc = extractForecast(row?.reasoning);
-          if (fc) next[t.ticker] = fc;
+          for (const row of (t.analysts || [])) {
+            if (matches(row.analyst, ownNames)) {
+              const fc = extractForecast(row?.reasoning);
+              if (fc) ownNext[t.ticker] = fc;
+            } else if (matches(row.analyst, otherNames)) {
+              const fc = extractForecast(row?.reasoning);
+              if (fc) otherNext[t.ticker] = fc;
+            }
+          }
         }
-        setRehydrated(next);
+        setRehydrated(ownNext);
+        setOverlayRehydrated(otherNext);
       })
       .catch(() => {
         // Fail-open: no rehydration is the placeholder state, not an error.
@@ -235,7 +261,7 @@ export function ForecasterNode({
     return () => {
       cancelled = true;
     };
-  }, [flowIdNum]);
+  }, [flowIdNum, ownNamesKey, otherNamesKey]);
 
   // Prefer live runtime data — it's always fresher than what the wiki
   // has from a prior run. Fall back to rehydrated wiki data when the
@@ -246,6 +272,50 @@ export function ForecasterNode({
     return { ...rehydrated, ...runtimeForecasts };
   }, [rehydrated, runtimeForecasts]);
 
+  // Find the OTHER forecaster node on the canvas (different backbone) and
+  // pull its forecasts in two ways:
+  //
+  //   * Runtime: read its node-context messages and parse the fence — same
+  //     idiom this node uses for itself but via a different node id.
+  //   * Rehydrated: already loaded above in the wiki query that fetched both
+  //     analyst names.
+  //
+  // The runtime path catches the case where the user just clicked Refresh
+  // on the OTHER forecaster — that node's messages update, this node's
+  // overlay updates without needing a wiki round-trip.
+  const otherForecasterId = useMemo<string | null>(() => {
+    for (const n of getNodes()) {
+      if (n.type !== 'forecaster-node') continue;
+      if (n.id === id) continue;
+      if (backboneFromId(n.id) === backbone) continue;  // same backbone, not an overlay candidate
+      return n.id;
+    }
+    return null;
+  }, [getNodes, id, backbone]);
+  const otherBackbone: Backbone = backbone === 'toto2' ? 'chronos2' : 'toto2';
+  const otherForecasterRuntime = useMemo<Record<string, ForecastPayload>>(() => {
+    if (!otherForecasterId) return {};
+    const otherData = agentNodeData[otherForecasterId];
+    if (!otherData) return {};
+    const out: Record<string, ForecastPayload> = {};
+    const msgs = otherData.messages || [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (!m.ticker) continue;
+      if (out[m.ticker]) continue;
+      const fc = extractForecast(m.analysis?.[m.ticker]);
+      if (fc) out[m.ticker] = fc;
+    }
+    return out;
+    // agentNodeData is recreated each render by getAgentNodeDataForFlow;
+    // depending on `agentNodeData[otherForecasterId]?.lastUpdated` would be
+    // marginally tighter but isn't worth the readability cost.
+  }, [agentNodeData, otherForecasterId]);
+  const overlayByTicker = useMemo<Record<string, ForecastPayload>>(() => {
+    if (!otherForecasterId) return {};
+    return { ...overlayRehydrated, ...otherForecasterRuntime };
+  }, [otherForecasterId, overlayRehydrated, otherForecasterRuntime]);
+
   const tickers = useMemo(() => Object.keys(forecastsByTicker).sort(), [forecastsByTicker]);
   const [activeTicker, setActiveTicker] = useState<string | null>(null);
   useEffect(() => {
@@ -254,6 +324,27 @@ export function ForecasterNode({
   }, [tickers, activeTicker]);
 
   const activeForecast = activeTicker ? forecastsByTicker[activeTicker] : null;
+  // Overlay for the currently-active ticker. Skipped (undefined) when:
+  //   - no other forecaster node on canvas
+  //   - other forecaster hasn't produced for this ticker yet
+  //   - other forecaster's bar frequency differs (overlay would be misleading)
+  const activeOverlay = (() => {
+    if (!activeTicker || !otherForecasterId) return undefined;
+    const o = overlayByTicker[activeTicker];
+    if (!o) return undefined;
+    if (activeForecast && o.frequency && activeForecast.frequency && o.frequency !== activeForecast.frequency) {
+      // Different frequencies — overlay would compare 5-min bars vs daily;
+      // x-axis would lie. Skip and surface a notice in the dialog instead.
+      return undefined;
+    }
+    return o;
+  })();
+  const overlayFreqMismatch = !!(activeForecast && activeTicker && otherForecasterId
+    && overlayByTicker[activeTicker]
+    && overlayByTicker[activeTicker].frequency
+    && activeForecast.frequency
+    && overlayByTicker[activeTicker].frequency !== activeForecast.frequency);
+  const overlayLabel = BACKBONE_INFO[otherBackbone].label;
 
   // Stand-alone refresh: POST /forecaster/refresh with the tickers we
   // already have data for and the current Chronos-2 settings, then
@@ -454,14 +545,34 @@ export function ForecasterNode({
             </div>
             {activeForecast ? (
               <>
-                {/* Inline preview — click-through to detail dialog. */}
+                {/* Inline preview — click-through to detail dialog.
+                    When another forecaster is on the canvas, its fan is
+                    overlaid (dashed q50, lighter band) and a small chip
+                    in the top-left identifies it. Mismatched bar frequency
+                    surfaces a separate amber chip. */}
                 <button
                   type="button"
                   onClick={() => setIsDetailOpen(true)}
                   title="Open detailed forecast"
                   className="group relative w-full rounded border border-border bg-node/40 hover:border-primary/40 transition-colors"
                 >
-                  <InlineFanChart forecast={activeForecast} />
+                  <InlineFanChart forecast={activeForecast} overlay={activeOverlay} />
+                  {activeOverlay && (
+                    <span
+                      className="absolute top-1 left-1 px-1 py-0.5 rounded bg-card/80 text-[8px] uppercase tracking-wide text-muted-foreground border border-border pointer-events-none"
+                      title={`Dashed line: ${overlayLabel} forecast for this ticker`}
+                    >
+                      +{overlayLabel}
+                    </span>
+                  )}
+                  {overlayFreqMismatch && !activeOverlay && (
+                    <span
+                      className="absolute top-1 left-1 px-1 py-0.5 rounded bg-amber-500/15 text-[8px] uppercase tracking-wide text-amber-500 border border-amber-500/40 pointer-events-none"
+                      title={`${overlayLabel} is on a different bar frequency — overlay suppressed`}
+                    >
+                      ⚠ {overlayLabel} freq differs
+                    </span>
+                  )}
                   <Maximize2 className="absolute top-1 right-1 h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
                 </button>
                 <ForecastSummary forecast={activeForecast} />
@@ -509,6 +620,9 @@ export function ForecasterNode({
           activeTicker={activeTicker}
           onTickerChange={setActiveTicker}
           forecastsByTicker={forecastsByTicker}
+          overlayByTicker={overlayByTicker}
+          overlayLabel={overlayLabel}
+          overlayFreqMismatch={overlayFreqMismatch}
           controls={{
             barFrequency,
             setBarFrequency,
@@ -530,14 +644,22 @@ export function ForecasterNode({
 
 // --- Inline fan chart (compact, on node body) -----------------------------
 
-function InlineFanChart({ forecast }: { forecast: ForecastPayload }) {
+function InlineFanChart({
+  forecast, overlay,
+}: { forecast: ForecastPayload; overlay?: ForecastPayload }) {
   const { history, q10, q25, q50, q75, q90 } = forecast;
   const W = 220;
   const H = 90;
   const padX = 4;
   const padY = 6;
 
-  const all = [...history, ...q10, ...q50, ...q90];
+  // Y-axis spans BOTH fans' values when an overlay is present, so the two
+  // q50 lines and both fans sit in the same coordinate space. History is
+  // shared (it's the same price series) — we only take it from the primary.
+  const overlayPoints = overlay
+    ? [...overlay.q10, ...overlay.q50, ...overlay.q90]
+    : [];
+  const all = [...history, ...q10, ...q50, ...q90, ...overlayPoints];
   const minV = Math.min(...all);
   const maxV = Math.max(...all);
   const yPad = (maxV - minV) * 0.04 || 1;
@@ -545,7 +667,13 @@ function InlineFanChart({ forecast }: { forecast: ForecastPayload }) {
   const yMax = maxV + yPad;
   const yRange = yMax - yMin || 1;
 
-  const total = history.length + q50.length;
+  // X-axis is shared; overlay's forecast length may differ. We always
+  // anchor on the primary's history + horizon for the chart bounds and
+  // trim the overlay to the primary's horizon if it's longer. Mismatched
+  // horizons would otherwise stretch one fan to a wrong x-step.
+  const horizonLen = q50.length;
+  const overlayTrim = overlay ? Math.min(overlay.q50.length, horizonLen) : 0;
+  const total = history.length + horizonLen;
   const xAt = (i: number) => padX + (i / (total - 1)) * (W - 2 * padX);
   const yAt = (v: number) => padY + (1 - (v - yMin) / yRange) * (H - 2 * padY);
 
@@ -553,29 +681,48 @@ function InlineFanChart({ forecast }: { forecast: ForecastPayload }) {
   const fcStart = history.length - 1;
   const lastHist = history[history.length - 1];
 
-  const bandPath = (lo: number[], hi: number[]) => {
-    const top = [lastHist, ...hi].map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(fcStart + i).toFixed(2)} ${yAt(v).toFixed(2)}`).join(' ');
-    const bot = [lastHist, ...lo]
+  const bandPath = (lo: number[], hi: number[], n: number) => {
+    const loSlice = lo.slice(0, n);
+    const hiSlice = hi.slice(0, n);
+    const top = [lastHist, ...hiSlice].map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(fcStart + i).toFixed(2)} ${yAt(v).toFixed(2)}`).join(' ');
+    const bot = [lastHist, ...loSlice]
       .slice()
       .reverse()
       .map((v, i, arr) => `L ${xAt(fcStart + (arr.length - 1 - i)).toFixed(2)} ${yAt(v).toFixed(2)}`)
       .join(' ');
     return `${top} ${bot} Z`;
   };
-
-  const q50Pts = [lastHist, ...q50];
-  const q50Path = q50Pts.map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(fcStart + i).toFixed(2)} ${yAt(v).toFixed(2)}`).join(' ');
+  const linePath = (vals: number[], n: number) => {
+    const pts = [lastHist, ...vals.slice(0, n)];
+    return pts.map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(fcStart + i).toFixed(2)} ${yAt(v).toFixed(2)}`).join(' ');
+  };
 
   const t = tone(forecast);
   const stroke = TONE_STROKE[t];
   const sepX = xAt(fcStart);
 
+  // Overlay tone — also colored by the OTHER backbone's own direction so
+  // disagreement is visible at a glance: if Chronos is green-q50-up and
+  // Toto is red-q50-down, the chart literally shows one line trending up
+  // and one trending down. Same alpha scaling for the bands to keep the
+  // primary's reading dominant.
+  const ot = overlay ? tone(overlay) : 'neu';
+  const overlayStroke = overlay ? TONE_STROKE[ot] : undefined;
+
   return (
     <svg width="100%" viewBox={`0 0 ${W} ${H}`} className="block">
-      <path d={bandPath(q10, q90)} fill={TONE_FILL_OUTER[t]} stroke="none" />
-      <path d={bandPath(q25, q75)} fill={TONE_FILL_INNER[t]} stroke="none" />
+      {/* Overlay rendered FIRST so the primary fan paints on top. */}
+      {overlay && overlay.q50.length > 0 && (
+        <>
+          <path d={bandPath(overlay.q10, overlay.q90, overlayTrim)} fill={TONE_FILL_OUTER[ot]} opacity={0.5} stroke="none" />
+          <path d={bandPath(overlay.q25, overlay.q75, overlayTrim)} fill={TONE_FILL_INNER[ot]} opacity={0.5} stroke="none" />
+          <path d={linePath(overlay.q50, overlayTrim)} fill="none" stroke={overlayStroke} strokeWidth={1.6} strokeDasharray="3,2" opacity={0.85} />
+        </>
+      )}
+      <path d={bandPath(q10, q90, horizonLen)} fill={TONE_FILL_OUTER[t]} stroke="none" />
+      <path d={bandPath(q25, q75, horizonLen)} fill={TONE_FILL_INNER[t]} stroke="none" />
       <path d={histPath} fill="none" stroke="currentColor" strokeWidth={1.2} opacity={0.55} />
-      <path d={q50Path} fill="none" stroke={stroke} strokeWidth={1.6} />
+      <path d={linePath(q50, horizonLen)} fill="none" stroke={stroke} strokeWidth={1.6} />
       <line x1={sepX} y1={padY} x2={sepX} y2={H - padY} stroke="currentColor" strokeWidth={0.5} strokeDasharray="2,2" opacity={0.4} />
     </svg>
   );
@@ -638,6 +785,13 @@ interface DetailDialogProps {
   activeTicker: string | null;
   onTickerChange: (t: string) => void;
   forecastsByTicker: Record<string, ForecastPayload>;
+  // Optional overlay payload — the OTHER forecaster's fan for the same
+  // tickers. Drawn as a dashed-q50 + lighter fan behind the primary.
+  // Missing entries = no overlay for that ticker (other forecaster
+  // hasn't produced it yet, or isn't on the canvas).
+  overlayByTicker?: Record<string, ForecastPayload>;
+  overlayLabel?: string;             // "Toto-2.0" when viewing Chronos, etc.
+  overlayFreqMismatch?: boolean;     // skip overlay + show warning when true
   controls: ChronosControls;
 }
 
@@ -659,8 +813,17 @@ function computeStale(forecast: ForecastPayload | null, controls: ChronosControl
   return { any: freq || pred, freq, pred };
 }
 
-function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onTickerChange, forecastsByTicker, controls }: DetailDialogProps) {
+function ForecastDetailDialog({
+  isOpen, onOpenChange, tickers, activeTicker, onTickerChange,
+  forecastsByTicker, overlayByTicker, overlayLabel, overlayFreqMismatch,
+  controls,
+}: DetailDialogProps) {
   const forecast = activeTicker ? forecastsByTicker[activeTicker] : null;
+  const overlay = activeTicker && overlayByTicker ? overlayByTicker[activeTicker] : undefined;
+  // Mismatched bar frequency makes the overlay misleading (x-axis would
+  // compare daily bars to 5-min bars). Skip the overlay paint in that
+  // case; the warning chip below tells the user why.
+  const effectiveOverlay = overlayFreqMismatch ? undefined : overlay;
   // Stale-chart detection: the chart's axes + cell labels reflect whatever
   // the LAST RUN produced (frequency, prediction_len). If the user has since
   // changed those settings in the dropdowns above, the chart is out of date
@@ -704,7 +867,16 @@ function ForecastDetailDialog({ isOpen, onOpenChange, tickers, activeTicker, onT
             )}
             aria-busy={stale.any}
           >
-            <DetailBody forecast={forecast} tickers={tickers} activeTicker={activeTicker} onTickerChange={onTickerChange} />
+            <DetailBody
+              forecast={forecast}
+              overlay={effectiveOverlay}
+              primaryLabel={controls.modelLabel}
+              overlayLabel={overlayLabel}
+              overlayFreqMismatch={overlayFreqMismatch}
+              tickers={tickers}
+              activeTicker={activeTicker}
+              onTickerChange={onTickerChange}
+            />
           </div>
         ) : (
           <div className="p-6 text-sm text-muted-foreground text-center">No forecast to display.</div>
@@ -902,12 +1074,14 @@ function DialogChronosSettings({ controls, stale }: { controls: ChronosControls;
 }
 
 function DetailBody({
-  forecast,
-  tickers,
-  activeTicker,
-  onTickerChange,
+  forecast, overlay, primaryLabel, overlayLabel, overlayFreqMismatch,
+  tickers, activeTicker, onTickerChange,
 }: {
   forecast: ForecastPayload;
+  overlay?: ForecastPayload;
+  primaryLabel?: string;
+  overlayLabel?: string;
+  overlayFreqMismatch?: boolean;
   tickers: string[];
   activeTicker: string | null;
   onTickerChange: (t: string) => void;
@@ -921,6 +1095,13 @@ function DetailBody({
   const startConf = forecast.confidence[0] ?? 0;
   const fmtPct = (a: number, b: number) => `${a >= b ? '+' : ''}${(((a - b) / b) * 100).toFixed(2)}%`;
   const t = tone(forecast);
+  // Overlay end-of-horizon stats — shown in a parallel row when both
+  // fans are available so the user can compare numerically, not just
+  // visually. We trim to the overlay's actual horizon (capped by primary's).
+  const oEndIdx = overlay ? Math.min(overlay.q50.length, forecast.q50.length) - 1 : -1;
+  const oQ10 = overlay && oEndIdx >= 0 ? overlay.q10[oEndIdx] : null;
+  const oQ50 = overlay && oEndIdx >= 0 ? overlay.q50[oEndIdx] : null;
+  const oQ90 = overlay && oEndIdx >= 0 ? overlay.q90[oEndIdx] : null;
 
   return (
     // flex-1 + min-h-0 so this fills the DialogContent's flex column,
@@ -947,17 +1128,59 @@ function DetailBody({
         </div>
       )}
 
-      {/* Header summary */}
-      <div className="grid grid-cols-6 gap-2 text-xs tabular-nums">
-        <Cell title="Last close" value={`$${last.toFixed(2)}`} />
-        <Cell title={`${forecast.horizon_days}-d Q10`} value={fmtPct(endQ10, last)} className="text-red-500/90" sub={`$${endQ10.toFixed(2)}`} />
-        <Cell title={`${forecast.horizon_days}-d Q50`} value={fmtPct(endQ50, last)} className={TONE_STROKE[t]} sub={`$${endQ50.toFixed(2)}`} />
-        <Cell title={`${forecast.horizon_days}-d Q90`} value={fmtPct(endQ90, last)} className="text-emerald-500/90" sub={`$${endQ90.toFixed(2)}`} />
-        <Cell title="Confidence (day 1)" value={`${startConf}%`} />
-        <Cell title={`Confidence (day ${forecast.horizon_days})`} value={`${endConf}%`} />
+      {/* Frequency mismatch — overlay was suppressed because the two
+          forecasters are on different bar frequencies. We don't even try
+          to overlay 5-min on daily; tell the user why. */}
+      {overlayFreqMismatch && (
+        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-500">
+          ⚠ {overlayLabel ?? 'Other forecaster'} is on a different bar frequency — overlay suppressed.
+          Match Bar Frequency on both forecaster nodes to compare them in the same chart.
+        </div>
+      )}
+
+      {/* Header summary — primary row + (when overlay exists) a parallel
+          row with the other backbone's numbers. Same column layout so
+          eyes track left-to-right. Swatch in the header row mirrors the
+          line style on the chart (solid = primary, dashed = overlay). */}
+      <div className="flex flex-col gap-1.5">
+        {primaryLabel && (
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground flex items-center gap-2">
+            <span className="inline-block w-4 h-0.5 bg-current" />
+            <span>{primaryLabel}</span>
+          </div>
+        )}
+        <div className="grid grid-cols-6 gap-2 text-xs tabular-nums">
+          <Cell title="Last close" value={`$${last.toFixed(2)}`} />
+          <Cell title={`${forecast.horizon_days}-d Q10`} value={fmtPct(endQ10, last)} className="text-red-500/90" sub={`$${endQ10.toFixed(2)}`} />
+          <Cell title={`${forecast.horizon_days}-d Q50`} value={fmtPct(endQ50, last)} className={TONE_STROKE[t]} sub={`$${endQ50.toFixed(2)}`} />
+          <Cell title={`${forecast.horizon_days}-d Q90`} value={fmtPct(endQ90, last)} className="text-emerald-500/90" sub={`$${endQ90.toFixed(2)}`} />
+          <Cell title="Confidence (day 1)" value={`${startConf}%`} />
+          <Cell title={`Confidence (day ${forecast.horizon_days})`} value={`${endConf}%`} />
+        </div>
+        {overlay && oQ10 != null && oQ50 != null && oQ90 != null && (
+          <>
+            <div className="text-[10px] uppercase tracking-wide text-muted-foreground flex items-center gap-2 mt-1">
+              <span className="inline-block w-4 border-t-2 border-dashed border-current" />
+              <span>{overlayLabel ?? 'overlay'}</span>
+            </div>
+            <div className="grid grid-cols-6 gap-2 text-xs tabular-nums">
+              <Cell title="Last close" value={`$${last.toFixed(2)}`} />
+              <Cell title={`${overlay.horizon_days}-d Q10`} value={fmtPct(oQ10, last)} className="text-red-500/90" sub={`$${oQ10.toFixed(2)}`} />
+              <Cell title={`${overlay.horizon_days}-d Q50`} value={fmtPct(oQ50, last)} className={TONE_STROKE[tone(overlay)]} sub={`$${oQ50.toFixed(2)}`} />
+              <Cell title={`${overlay.horizon_days}-d Q90`} value={fmtPct(oQ90, last)} className="text-emerald-500/90" sub={`$${oQ90.toFixed(2)}`} />
+              <Cell title="Conf (day 1)" value={`${overlay.confidence[0] ?? 0}%`} />
+              <Cell title={`Conf (day ${overlay.horizon_days})`} value={`${overlay.confidence[overlay.confidence.length - 1] ?? 0}%`} />
+            </div>
+          </>
+        )}
       </div>
 
-      <DetailChart forecast={forecast} />
+      <DetailChart
+        forecast={forecast}
+        overlay={overlay}
+        primaryLabel={primaryLabel}
+        overlayLabel={overlayLabel}
+      />
 
       {/* Legend / glossary — split into bullet items so each idea reads
           on its own line; bigger text so it's actually readable. */}
@@ -965,6 +1188,9 @@ function DetailBody({
         <li><span className="text-foreground">Inner band</span> — 50% prediction interval (q25–q75)</li>
         <li><span className="text-foreground">Outer band</span> — 80% prediction interval (q10–q90)</li>
         <li><span className="text-foreground">Confidence</span> — derived from fan width; available in the hover tooltip</li>
+        {overlay && (
+          <li><span className="text-foreground">Dashed line + lighter fan</span> — overlay backbone's q50 / 80% PI</li>
+        )}
       </ul>
     </div>
   );
@@ -987,7 +1213,14 @@ function Cell({ title, value, sub, className }: { title: string; value: string; 
 
 // --- Detail two-panel chart -----------------------------------------------
 
-function DetailChart({ forecast }: { forecast: ForecastPayload }) {
+function DetailChart({
+  forecast, overlay, primaryLabel, overlayLabel,
+}: {
+  forecast: ForecastPayload;
+  overlay?: ForecastPayload;
+  primaryLabel?: string;
+  overlayLabel?: string;
+}) {
   // Responsive geometry: the viewBox matches the SVG's actual rendered
   // pixel dimensions, so 1 viewBox unit == 1 screen pixel and there's no
   // preserveAspectRatio letterboxing on wide screens. Measuring the SVG
@@ -1024,11 +1257,22 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
   const fcN = q50.length;
   const total = histN + fcN;
 
+  // Overlay length is trimmed to the primary's horizon so both fans share
+  // the x-axis. We pad short overlays to the same array length so path
+  // construction is symmetric; longer overlays get truncated.
+  const overlayLen = overlay ? Math.min(overlay.q50.length, fcN) : 0;
+
   const innerW = W - padL - padR;
   const xAt = (i: number) => padL + (i / (total - 1)) * innerW;
 
-  // Price y-axis — domain spans every drawn point, padded 4%.
-  const allPrice = [...history, ...q10, ...q50, ...q90];
+  // Price y-axis — domain spans every drawn point ACROSS BOTH FANS so
+  // they share a common scale. Without this, the overlay would be
+  // visually rescaled to the primary's y-range and look misleadingly
+  // tight/wide depending on which fan is more uncertain.
+  const overlayPts = overlay
+    ? [...overlay.q10.slice(0, overlayLen), ...overlay.q50.slice(0, overlayLen), ...overlay.q90.slice(0, overlayLen)]
+    : [];
+  const allPrice = [...history, ...q10, ...q50, ...q90, ...overlayPts];
   const minP = Math.min(...allPrice);
   const maxP = Math.max(...allPrice);
   const padPrice = (maxP - minP) * 0.04 || 1;
@@ -1039,6 +1283,12 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
 
   const t = tone(forecast);
   const stroke = TONE_STROKE[t];
+  // Overlay tone — independent of the primary, so an "agreement" run paints
+  // both q50 lines in the same color, while a "disagreement" run paints
+  // them in opposing colors. The line style (solid vs dashed) tells you
+  // which model is which.
+  const ot = overlay ? tone(overlay) : 'neu';
+  const overlayStroke = overlay ? TONE_STROKE[ot] : undefined;
 
   const fcStart = histN - 1;
   const lastHist = history[histN - 1];
@@ -1047,17 +1297,27 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
   // Paths
   const histPath = history.map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(i).toFixed(2)} ${yAtPrice(v).toFixed(2)}`).join(' ');
 
-  const bandPath = (lo: number[], hi: number[]) => {
-    const top = [lastHist, ...hi].map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(fcStart + i).toFixed(2)} ${yAtPrice(v).toFixed(2)}`).join(' ');
-    const bot = [lastHist, ...lo]
+  // bandPath takes an optional `len` so we can trim the overlay fan to the
+  // primary's horizon when they differ. Length defaults to fcN (the
+  // primary's horizon) when omitted — back-compat with all existing call
+  // sites that didn't pass it.
+  const bandPath = (lo: number[], hi: number[], len: number = fcN) => {
+    const loSlice = lo.slice(0, len);
+    const hiSlice = hi.slice(0, len);
+    const top = [lastHist, ...hiSlice].map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(fcStart + i).toFixed(2)} ${yAtPrice(v).toFixed(2)}`).join(' ');
+    const bot = [lastHist, ...loSlice]
       .slice()
       .reverse()
       .map((v, i, arr) => `L ${xAt(fcStart + (arr.length - 1 - i)).toFixed(2)} ${yAtPrice(v).toFixed(2)}`)
       .join(' ');
     return `${top} ${bot} Z`;
   };
+  const linePath = (vals: number[], len: number = fcN) => {
+    const pts = [lastHist, ...vals.slice(0, len)];
+    return pts.map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(fcStart + i).toFixed(2)} ${yAtPrice(v).toFixed(2)}`).join(' ');
+  };
 
-  const q50Path = [lastHist, ...q50].map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(fcStart + i).toFixed(2)} ${yAtPrice(v).toFixed(2)}`).join(' ');
+  const q50Path = linePath(q50);
 
   // Axis tick values — 5 evenly-spaced over the y-domain so the chart is
   // readable as a numeric reference, not just a shape.
@@ -1176,11 +1436,20 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
           opacity={0.25}
         />
 
-        {/* Nested bands + median + history */}
+        {/* Overlay fan rendered FIRST so the primary paints on top. Lower
+            alpha + dashed q50 stroke distinguish it from the primary. */}
+        {overlay && overlayLen > 0 && (
+          <>
+            <path d={bandPath(overlay.q10, overlay.q90, overlayLen)} fill={TONE_FILL_OUTER[ot]} opacity={0.45} stroke="none" />
+            <path d={bandPath(overlay.q25, overlay.q75, overlayLen)} fill={TONE_FILL_INNER[ot]} opacity={0.45} stroke="none" />
+            <path d={linePath(overlay.q50, overlayLen)} fill="none" stroke={overlayStroke} strokeWidth={2.0} strokeDasharray="6,4" opacity={0.85} />
+          </>
+        )}
+        {/* Nested bands + median + history (primary) */}
         <path d={bandPath(q10, q90)} fill={TONE_FILL_OUTER[t]} stroke="none" />
         <path d={bandPath(q25, q75)} fill={TONE_FILL_INNER[t]} stroke="none" />
         <path d={histPath} fill="none" stroke="currentColor" strokeWidth={1.2} opacity={0.65} />
-        <path d={q50Path} fill="none" stroke={stroke} strokeWidth={1.6} />
+        <path d={q50Path} fill="none" stroke={stroke} strokeWidth={2.0} />
 
         {/* Today separator */}
         <line x1={sepX} y1={padTopPrice} x2={sepX} y2={padTopPrice + PRICE_H} stroke="currentColor" strokeWidth={0.5} strokeDasharray="2,2" opacity={0.4} />
@@ -1219,7 +1488,29 @@ function DetailChart({ forecast }: { forecast: ForecastPayload }) {
             {fcIdx != null && (
               <circle cx={hoverX} cy={yAtPrice(q50[fcIdx])} r={3} fill={stroke} />
             )}
+            {/* Second q50 dot for the overlay backbone at the same step,
+                drawn only when the overlay extends that far. Hollow ring so
+                primary and overlay markers don't collide visually. */}
+            {fcIdx != null && overlay && fcIdx < overlayLen && (
+              <circle cx={hoverX} cy={yAtPrice(overlay.q50[fcIdx])} r={4.5} fill="none" stroke={overlayStroke} strokeWidth={1.5} />
+            )}
           </>
+        )}
+
+        {/* Legend chip — top-right of the price panel. Only when an
+            overlay is present (single-fan view stays clean). Solid
+            swatch for primary, dashed for overlay, mirroring the line
+            styles below. */}
+        {overlay && (primaryLabel || overlayLabel) && (
+          <g transform={`translate(${W - padR - 12}, ${padTopPrice + 16})`}>
+            <rect x={-180} y={-18} width={180} height={42} rx={4} fill="currentColor" opacity={0.05} />
+            {/* Primary swatch — solid stroke */}
+            <line x1={-170} y1={-6} x2={-150} y2={-6} stroke={stroke} strokeWidth={2.5} />
+            <text x={-145} y={-6} dy=".35em" fontSize={Math.max(12, FS_TICK - 4)} fill="currentColor">{primaryLabel ?? 'this'}</text>
+            {/* Overlay swatch — dashed */}
+            <line x1={-170} y1={12} x2={-150} y2={12} stroke={overlayStroke} strokeWidth={2.5} strokeDasharray="6,4" />
+            <text x={-145} y={12} dy=".35em" fontSize={Math.max(12, FS_TICK - 4)} fill="currentColor">{overlayLabel ?? 'overlay'}</text>
+          </g>
         )}
       </svg>
 
