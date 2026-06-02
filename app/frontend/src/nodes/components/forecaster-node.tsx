@@ -29,7 +29,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
-import { useNodeState } from '@/hooks/use-node-state';
+import { getNodeInternalState, setNodeInternalState, useNodeState } from '@/hooks/use-node-state';
 import { cn } from '@/lib/utils';
 import { refreshForecaster } from '@/services/forecaster-api';
 import { getFlowMemory } from '@/services/memory-api';
@@ -154,8 +154,14 @@ export function ForecasterNode({
   const { currentFlowId } = useFlowContext();
   const { getAgentNodeDataForFlow, updateAgentNode } = useNodeContext();
   // Needed to find the OTHER forecaster node on the canvas for the
-  // overlay (Chronos sees Toto, Toto sees Chronos). React Flow's
-  // `getNodes()` is stable across renders for this purpose.
+  // overlay (Chronos sees Toto, Toto sees Chronos) and for settings
+  // mirroring (changes propagate to all forecaster nodes so both
+  // backbones run on identical context/prediction/frequency — overlay
+  // requires matching bar frequency to avoid x-axis ambiguity).
+  // `useNodes()` is the reactive variant (re-fires when nodes are
+  // added/removed); `getNodes` is the stable getter for setter
+  // callbacks that don't need a render trigger.
+  const liveNodes = useNodes();
   const { getNodes } = useReactFlow();
 
   const agentNodeData = getAgentNodeDataForFlow(currentFlowId?.toString() || null);
@@ -183,12 +189,112 @@ export function ForecasterNode({
   // back via getNodeInternalState when assembling the run request, and
   // so the values survive flow reload via the standard internal_state
   // restore path.
-  const [contextLen, setContextLen] = useNodeState<number>(id, 'forecasterContextLen', CTX_DEFAULT);
-  const [predictionLen, setPredictionLen] = useNodeState<number>(id, 'forecasterPredictionLen', PRED_DEFAULT);
-  const [barFrequency, setBarFrequency] = useNodeState<BarFrequency>(id, 'forecasterBarFrequency', 'day');
+  const [contextLen, setContextLenRaw] = useNodeState<number>(id, 'forecasterContextLen', CTX_DEFAULT);
+  const [predictionLen, setPredictionLenRaw] = useNodeState<number>(id, 'forecasterPredictionLen', PRED_DEFAULT);
+  const [barFrequency, setBarFrequencyRaw] = useNodeState<BarFrequency>(id, 'forecasterBarFrequency', 'day');
   const clampCtx = (n: number) => Math.max(CTX_MIN, Math.min(CTX_MAX, Math.round(n) || CTX_DEFAULT));
   const clampPred = (n: number) => Math.max(PRED_MIN, Math.min(PRED_MAX, Math.round(n) || PRED_DEFAULT));
   const activeFreq = FREQ_OPTIONS.find((o) => o.value === barFrequency) ?? FREQ_OPTIONS[0];
+
+  // The two forecaster backbones (Chronos-2 and Toto-2.0) share a single
+  // settings source — bar frequency, context, prediction. Per-node settings
+  // would let the user pick e.g. 5-min for Chronos and Daily for Toto;
+  // backbones would then write forecasts on incompatible x-axes and the
+  // overlay (PR #114) would suppress itself with a "freq differs" warning,
+  // which is what the user actually hits. The settings stay in each node's
+  // own useNodeState so flow serialization is unchanged; on every write
+  // we mirror the new value into the *other* forecaster node's state via
+  // setNodeInternalState. useNodeState's stateChange listener picks the
+  // mirrored value back up and re-renders the other node's UI in sync.
+  const syncToOtherForecasters = (key: string, value: unknown) => {
+    for (const n of getNodes()) {
+      if (n.type !== 'forecaster-node') continue;
+      if (n.id === id) continue;
+      const cur = getNodeInternalState(n.id) || {};
+      if (cur[key] === value) continue;  // no-op, avoids notifying for unchanged value
+      setNodeInternalState(n.id, { ...cur, [key]: value });
+    }
+  };
+  const setContextLen = (v: number) => {
+    setContextLenRaw(v);
+    syncToOtherForecasters('forecasterContextLen', v);
+  };
+  const setPredictionLen = (v: number) => {
+    setPredictionLenRaw(v);
+    syncToOtherForecasters('forecasterPredictionLen', v);
+  };
+  const setBarFrequency = (v: BarFrequency) => {
+    setBarFrequencyRaw(v);
+    syncToOtherForecasters('forecasterBarFrequency', v);
+  };
+
+  // Mount-time reconciliation. Three situations need handling:
+  //   1. A second forecaster is dropped after the first. The new one should
+  //      adopt the existing node's settings rather than impose its defaults.
+  //   2. Same as 1 but with the drop order reversed (toto dropped first,
+  //      configured, then chronos dropped on top). The previous version
+  //      forced toto to adopt chronos's defaults here, wiping the user's
+  //      toto config — symmetric handling avoids that.
+  //   3. Legacy flows saved before this sync was wired up may have the two
+  //      nodes' settings out of sync. Needs a deterministic tiebreaker.
+  // Rule: "configured wins, chronos breaks ties." A node is *configured*
+  // when at least one of its three settings differs from the module
+  // defaults. We only adopt FROM a configured neighbour; default-only
+  // neighbours never overwrite anything. If multiple configured candidates
+  // exist (the legacy case 3), the chronos2 node is the source of truth
+  // — it always declines to adopt FROM toto2 when it's already configured
+  // itself, which makes the convergence order-independent across the two
+  // mount effects. Ref-guards keep each mount idempotent past success.
+  const didMountSyncRef = useRef(false);
+  useEffect(() => {
+    if (didMountSyncRef.current) return;
+    const isConfigured = (s: Record<string, unknown> | undefined): boolean => {
+      if (!s) return false;
+      const c = s.forecasterContextLen;
+      const p = s.forecasterPredictionLen;
+      const f = s.forecasterBarFrequency;
+      return (
+        (typeof c === 'number' && c !== CTX_DEFAULT) ||
+        (typeof p === 'number' && p !== PRED_DEFAULT) ||
+        (typeof f === 'string' && f !== 'day')
+      );
+    };
+    const others = getNodes().filter(
+      (n) => n.type === 'forecaster-node' && n.id !== id,
+    );
+    if (others.length === 0) return;  // no others yet; effect re-fires on liveNodes change
+    const configuredOthers = others.filter((n) =>
+      isConfigured(getNodeInternalState(n.id) as Record<string, unknown> | undefined),
+    );
+    if (configuredOthers.length === 0) {
+      // Everyone is at defaults; nothing to adopt. Mark done so we don't
+      // re-evaluate forever as the user moves nodes around.
+      didMountSyncRef.current = true;
+      return;
+    }
+    // Chronos-2 tiebreaker: if I'm chronos2 AND I'm already configured,
+    // I'm authoritative — don't adopt from a (possibly also-configured)
+    // toto2 sibling. This is the legacy case-3 deterministic resolution.
+    const myState = getNodeInternalState(id) as Record<string, unknown> | undefined;
+    if (backbone === 'chronos2' && isConfigured(myState)) {
+      didMountSyncRef.current = true;
+      return;
+    }
+    // Prefer a chronos2 source (legacy case 3); fall back to whatever
+    // configured neighbour exists (handles toto-first / chronos-defaults).
+    const source =
+      configuredOthers.find((n) => backboneFromId(n.id) === 'chronos2') ||
+      configuredOthers[0];
+    const cs = getNodeInternalState(source.id) as Record<string, unknown> | undefined;
+    if (!cs) return;
+    didMountSyncRef.current = true;
+    if (typeof cs.forecasterContextLen === 'number') setContextLenRaw(cs.forecasterContextLen);
+    if (typeof cs.forecasterPredictionLen === 'number') setPredictionLenRaw(cs.forecasterPredictionLen);
+    if (typeof cs.forecasterBarFrequency === 'string') setBarFrequencyRaw(cs.forecasterBarFrequency as BarFrequency);
+    // setters from useNodeState are stable; deps cover liveNodes so the
+    // effect re-fires when a forecaster is added/removed later.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backbone, id, liveNodes]);
 
   // Live runtime forecasts: {ticker → latest forecast}, newest-first scan
   // of the SSE message history that NodeContext accumulates during a run.
@@ -283,13 +389,10 @@ export function ForecasterNode({
   // The runtime path catches the case where the user just clicked Refresh
   // on the OTHER forecaster — that node's messages update, this node's
   // overlay updates without needing a wiki round-trip.
-  // Use xyflow's `useNodes()` (not `getNodes()` from useReactFlow) so this
-  // memo re-fires when nodes are added/removed on the canvas. `getNodes`
-  // is a stable function reference — depending on it in useMemo means the
-  // memo is computed once at mount and never updates if the user drops
-  // the *other* forecaster later. `useNodes()` returns the live array, so
-  // any structural change drives a re-render and re-computes this.
-  const liveNodes = useNodes();
+  // `liveNodes` (declared above) drives this memo so adds/removes on the
+  // canvas re-fire it. `getNodes()` from useReactFlow is stable across
+  // renders — depending on it in useMemo would compute once at mount and
+  // never update if the user drops the *other* forecaster later.
   const otherForecasterId = useMemo<string | null>(() => {
     for (const n of liveNodes) {
       if (n.type !== 'forecaster-node') continue;
@@ -434,7 +537,17 @@ export function ForecasterNode({
                 (1m≤7d, 5m≤60d, 1h≤730d). Same UI for Chronos and Toto —
                 both honour the same context/prediction/frequency contract. */}
             <TooltipProvider>
-              <div className="text-subtitle text-primary flex items-center gap-1 mt-1">{modelLabel} Settings</div>
+              <div className="text-subtitle text-primary flex items-center gap-1 mt-1">
+                <span>{modelLabel} Settings</span>
+                {otherForecasterId && (
+                  <span
+                    className="text-[9px] uppercase tracking-wide text-muted-foreground font-normal"
+                    title={`Bar frequency, context, and prediction are shared with the ${overlayLabel} node so both backbones run on matching axes (required for the overlay).`}
+                  >
+                    · synced with {overlayLabel}
+                  </span>
+                )}
+              </div>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <div className="flex flex-col gap-0.5">
@@ -642,6 +755,7 @@ export function ForecasterNode({
             canRefresh: tickers.length > 0,
             tickerCount: tickers.length,
             modelLabel,
+            syncedWithLabel: otherForecasterId ? overlayLabel : null,
           }}
         />
       </CardContent>
@@ -783,6 +897,10 @@ interface ChronosControls {
   canRefresh: boolean;  // false when there are no tickers yet
   tickerCount: number;  // for the tooltip
   modelLabel: string;   // "Chronos-2" or "Toto-2.0" — drives dialog headers
+  // Non-null when the other forecaster backbone is also on the canvas;
+  // editing any field mirrors the value into that node's state so both
+  // backbones share a single set of axes (overlay needs matching freq).
+  syncedWithLabel: string | null;
 }
 
 interface DetailDialogProps {
@@ -991,7 +1109,17 @@ function DialogChronosSettings({ controls, stale }: { controls: ChronosControls;
     <TooltipProvider>
       <div className="rounded border border-border bg-node/40 p-3">
         <div className="flex items-center justify-between mb-2">
-          <div className="text-xs uppercase tracking-wide text-muted-foreground">{controls.modelLabel} Settings</div>
+          <div className="text-xs uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
+            <span>{controls.modelLabel} Settings</span>
+            {controls.syncedWithLabel && (
+              <span
+                className="text-[10px] normal-case tracking-normal text-muted-foreground/80"
+                title={`Bar frequency, context, and prediction are shared with the ${controls.syncedWithLabel} node so both backbones run on matching axes (required for the overlay).`}
+              >
+                · synced with {controls.syncedWithLabel}
+              </span>
+            )}
+          </div>
           {/* Refresh-this-node-only — same handler the node body uses. */}
           <Tooltip>
             <TooltipTrigger asChild>
